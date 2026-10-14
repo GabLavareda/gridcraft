@@ -58,8 +58,12 @@ support comes from `crates/engine/src/io.rs` (`FileKind`), `crates/xlsx/src` and
 
 Excel's Get Data reaches files (Excel, CSV, XML, JSON, PDF, Parquet, folders), databases (SQL
 Server, Access, ODBC, …), web pages, SharePoint and online services, through Power Query.
-GridCraft imports CSV/TSV, JSON and HTML tables only, with no query editor, no connections and no
-refresh. Counted under features (Get & Transform, ~10% ready), not here.
+GridCraft imports CSV/TSV, JSON and HTML tables, and runs queries written in the Power Query M
+language over the workbook's tables, CSV, JSON, local files and other workbooks, with load and
+refresh ([power-query.md](power-query.md)). Queries are read from and written to the Data Mashup
+custom XML part ([MS-QDEFF]); a part read and not changed is written back byte for byte. There is
+no query editor, and no connection or query table is written for a new query. Counted under
+features (Get & Transform), not here.
 
 ## Work (76–114 h)
 

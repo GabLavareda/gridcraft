@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** minor (direct desktop printing through craft-print) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** minor (queries: Power Query M engine, load and refresh, Data Mashup part) · **Target:** Microsoft Excel (Microsoft 365)
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using GridCraft for real work first). This is the work list: pick from the top, check the open
@@ -101,8 +101,15 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   100–165 h including #5. [localization-parity.md](localization-parity.md)
 
 ### 12. Get & Transform, external data, data model (F)
-- No Power Query editor, connections, refresh, From Web/database/folder sources, relationships or
-  data model (`data.fromWeb`, `data.relationships` missing). **Estimate:** 60–100 h.
+- **In:** the Power Query M language (`crates/mquery`: evaluator and 420 library functions),
+  queries kept in the workbook, loaded to tables and refreshed (`data.query.*`,
+  `data.refreshAll`), saved and read as Excel's Data Mashup part. Sources: the workbook's own
+  tables, CSV, JSON, local files, other workbooks. [power-query.md](power-query.md)
+- **Missing:** the Power Query Editor (queries pane, applied steps, preview, transform commands);
+  Get Data, From Text/CSV and From Table/Range making queries; From Web, databases and folders;
+  connections and query tables for new queries, so that Excel refreshes them; relationships and
+  the data model (`data.fromWeb`, `data.relationships` missing). Not verified in Excel.
+  **Estimate:** 40–70 h.
 
 ### 13. Analysis tools: Solver, Analysis ToolPak, Forecast Sheet (F)
 - `data.solver`, `data.analysisToolPak` missing. Forecast Sheet (`data.forecastSheet`) and the
@@ -160,6 +167,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | §12: queries in the Power Query M language run, load to tables and refresh; saved as the Data Mashup part. The editor and more sources remain |
 | 2026-10-12 | minor | Desktop File > Print now discovers printers and submits PDF jobs through pinned craft-print with printer choice, copies, duplex and grayscale; browser printing and PDF export remain available. Remaining print parity includes page ranges and driver-specific tray/options UI; physical printer fidelity needs hardware validation. |
 | 2026-10-11 | minor | §6: iterative calculation for circular references landed (Maximum Iterations, Maximum Change) |
 | 2026-10-11 | minor | §15: trim-reference operators (`A1:.E10`, `A1.:E10`, `A1.:.E10`) parse and evaluate |

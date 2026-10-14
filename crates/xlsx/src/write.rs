@@ -162,6 +162,15 @@ pub fn abs_range(r: &RangeRef) -> String {
 }
 
 pub fn write_xlsx(wb: &Workbook, kind: XlsxKind) -> Result<Vec<u8>, IoError> {
+    // Queries are written through the kept parts: the custom XML part that holds them.
+    let with_queries;
+    let wb = match crate::mashup::preserved_with_queries(wb)? {
+        Some(preserved) => {
+            with_queries = Workbook { preserved: Some(preserved), ..wb.clone() };
+            &with_queries
+        }
+        None => wb,
+    };
     if wb.sheets.is_empty() {
         return Err(IoError::Format("a workbook needs at least one sheet".into()));
     }

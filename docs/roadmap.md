@@ -78,14 +78,14 @@ to check our files, and Windows machines with the reported GPU drivers.
 | M13 | Release & polish | releases shipping (v0.2.0–v0.4.0, signed) |
 | M14 | **Beta gates** (table above) | not started as a milestone; parts in open PRs |
 | M15 | Localization infrastructure and the twelve languages | started: ribbon catalog in ja, zh, ko, pt-BR, ru (#31, #104, #82); German in PR #163 |
-| M16 | Get & Transform, data model | not started |
+| M16 | Get & Transform, data model | started: M language engine, queries load and refresh, Data Mashup part; the editor, more sources and the data model remain |
 
 ## After beta (ranked)
 
 | Work | Gap | Hours |
 |---|---|---|
 | Localization: catalog past the ribbon, then twelve languages | #11 | 100–165 |
-| Get & Transform and the data model | #12 | 60–100 |
+| Get & Transform and the data model | #12 | 40–70 |
 | Solver, Analysis ToolPak, Forecast Sheet | #13 | 22–35 |
 | Remaining functions, oracle suite | #15 | 18–30 |
 | Collaboration and review | #16 | 35–55 |
