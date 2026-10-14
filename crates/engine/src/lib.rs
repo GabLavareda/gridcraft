@@ -17,6 +17,7 @@ pub mod outline;
 pub mod paper;
 pub mod pivot;
 pub mod pivot_calc;
+pub mod query;
 pub mod sample;
 pub mod selection;
 pub mod tables;

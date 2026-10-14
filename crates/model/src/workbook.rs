@@ -75,6 +75,21 @@ pub struct DefinedName {
     pub hidden: bool,
 }
 
+/// A query (Data › Get & Transform Data): a named formula in the Power Query M language that
+/// produces a table, and where its result goes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Query {
+    pub name: String,
+    /// The M expression, usually `let … in …`.
+    pub formula: String,
+    #[serde(default)]
+    pub description: String,
+    /// Name of the table the result is loaded to. `None` = connection only: the query isn't
+    /// loaded to a sheet, other queries use it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_to: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DocProps {
     pub title: String,
@@ -113,6 +128,9 @@ pub struct Workbook {
     /// separator back (a `;` file stays a `;` file). `None` = not read from CSV: CSV saves use `,`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub csv_delimiter: Option<u8>,
+    /// Queries (Data › Get & Transform Data), in the order of the Queries pane.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queries: Vec<Query>,
     /// Unmodelled file content kept for saving (package root and workbook level). Not in JSON.
     #[serde(skip)]
     pub preserved: Option<Arc<crate::preserved::Preserved>>,
@@ -142,8 +160,13 @@ impl Workbook {
             cell_styles: vec![],
             vba_project: None,
             csv_delimiter: None,
+            queries: vec![],
             preserved: None,
         }
+    }
+    /// The query called `name` (names compare without regard to case).
+    pub fn query(&self, name: &str) -> Option<&Query> {
+        self.queries.iter().find(|q| q.name.eq_ignore_ascii_case(name))
     }
     pub fn sheet(&self, i: usize) -> Option<&Sheet> {
         self.sheets.get(i).map(|s| s.as_ref())

@@ -1569,6 +1569,7 @@ dependencies = [
  "gridcraft-formula",
  "gridcraft-functions",
  "gridcraft-model",
+ "gridcraft-mquery",
  "gridcraft-numfmt",
  "gridcraft-pdf",
  "gridcraft-xlsx",

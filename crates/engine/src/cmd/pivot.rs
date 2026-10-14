@@ -166,7 +166,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Refresh All",
             ["Data", "Queries & Connections"],
             Some("Cmd+Alt+F5"),
-            "{replace?} refreshes every PivotTable → {refreshed, errors}",
+            "{replace?} refreshes every loaded query, then every PivotTable → {refreshed, errors, queries?: {refreshed, errors}}",
             has_doc,
             refresh_all
         ),
@@ -1234,6 +1234,16 @@ fn refresh(s: &mut Session, p: &Json) -> Result<Json> {
 
 fn refresh_all(s: &mut Session, p: &Json) -> Result<Json> {
     let replace = bool_param(p, "replace").unwrap_or(false);
+    // Queries first: a PivotTable may read the table a query loads to.
+    let queries = super::query::refresh_all(s);
+    let mut out = refresh_pivots(s, replace)?;
+    if queries["refreshed"].as_array().is_some_and(|a| !a.is_empty()) || queries["errors"].as_array().is_some_and(|a| !a.is_empty()) {
+        out["queries"] = queries;
+    }
+    Ok(out)
+}
+
+fn refresh_pivots(s: &mut Session, replace: bool) -> Result<Json> {
     edit(s, |cx| {
         let mut n = 0;
         let mut errors = vec![];
