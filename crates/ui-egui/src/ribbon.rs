@@ -1877,6 +1877,23 @@ fn data(app: &mut SheetApp, ui: &mut Ui) {
     if gd.clicked() {
         app.open_dialog("open", json!({}));
     }
+    // Queries (Get & Transform): made and edited in the Query Editor, listed in their pane.
+    ui.vertical(|ui| {
+        if small_button(ui, Icon::Table, "From Table/Range", "Make a query that reads the table at the selection", false).clicked() {
+            app.open_dialog("queryEditor", json!({"fromSelection": true}));
+        }
+        if small_button(ui, Icon::Script, "New Query", "Write a query in the Power Query M language", false).clicked() {
+            app.open_dialog("queryEditor", json!({}));
+        }
+    });
+    let __k = big_button(ui, Icon::Redo, "Refresh\nAll", "Refresh every query, then every PivotTable", false);
+    control_keytip(app, ui, &__k, "data.refreshAll");
+    if __k.clicked() {
+        act(app, "data.refreshAll", json!({}));
+    }
+    if big_button(ui, Icon::Link, "Queries &\nConnections", "Queries & Connections", false).clicked() {
+        app.grid.pane = if app.grid.pane.as_deref() == Some("queries") { None } else { Some("queries".into()) };
+    }
     sep(ui);
     ui.vertical(|ui| {
         let __k = small_button(ui, Icon::SortAsc, "", "Sort A to Z", false);

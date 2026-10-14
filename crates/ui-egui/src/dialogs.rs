@@ -782,6 +782,7 @@ impl Dialog {
                 dialog
             }
             "pickList" => Dialog::custom("pickList", "Pick From List", json!({})),
+            "queryEditor" => Dialog::custom("queryEditor", "Query Editor", crate::query_editor::defaults(app, &params)?),
             "saveCopy" => Dialog::custom("saveCopy", "Save a Copy", json!({"format": p("format")})),
             "saveChanges" => Dialog::custom("saveChanges", "Save Changes?", json!({"title": p("title")})),
             "start" => Dialog::custom("start", "GridCraft", json!({})),
@@ -790,11 +791,12 @@ impl Dialog {
                 app.run_or_alert("review.showComments", json!({"on": true}));
                 return None;
             }
-            "watch" | "selectionPane" | "formatChart" => {
+            "watch" | "selectionPane" | "formatChart" | "queries" => {
                 app.grid.pane = Some(
                     match name {
                         "watch" => "watch",
                         "selectionPane" => "selection",
+                        "queries" => "queries",
                         _ => "formatChart",
                     }
                     .into(),
@@ -887,6 +889,7 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
         "about" => 660.0,
         "insertFunction" | "commandSearch" | "nameManager" | "manageRules" | "journal" | "agents" | "macros" => 520.0,
         "recommendedCharts" => 600.0,
+        "queryEditor" => 820.0,
         "analysisToolPak" => 420.0,
         "solver" => 460.0,
         _ => 380.0,
@@ -917,6 +920,7 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                 "solver" => solver(ui, &mut d, &mut confirm, &mut open),
                 "solverResults" => solver_results(app, ui, &mut d, &mut open),
                 "spelling" => spelling(app, ui, &mut d, &mut open),
+                "queryEditor" => crate::query_editor::show(app, ui, &mut d, &mut open),
                 "agents" => {
                     ui.label("GridCraft is fully drivable by agents. Every menu item, button and gesture is a command:");
                     ui.add_space(4.0);
@@ -1104,7 +1108,8 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
             open_url(&u);
         }
     }
-    if ctx.input(|i| i.key_pressed(Key::Escape)) || !win_open {
+    // Escape would throw away a formula being typed in the Query Editor: it closes by its buttons.
+    if (ctx.input(|i| i.key_pressed(Key::Escape)) && d.name != "queryEditor") || !win_open {
         open = false;
     }
     if confirm && d.name == "insertPicture" && d.picture_target != app.view_key() {

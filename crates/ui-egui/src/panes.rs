@@ -1,4 +1,5 @@
-//! Right-hand task panes: Comments, Watch Window, Selection Pane, Format Chart.
+//! Right-hand task panes: Comments, Watch Window, Selection Pane, Format Chart, Queries &
+//! Connections.
 
 use egui::{Color32, Ui, vec2};
 use serde_json::{Value as Json, json};
@@ -24,6 +25,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
                 "watch" => "Watch Window",
                 "selection" => "Selection",
                 "formatChart" => "Format Chart Area",
+                "queries" => "Queries & Connections",
                 _ => "",
             };
             ui.label(egui::RichText::new(title).font(theme::ui_bold(15.0)));
@@ -42,6 +44,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
             "watch" => watch(app, ui),
             "selection" => selection(app, ui),
             "formatChart" => format_chart(app, ui),
+            "queries" => queries(app, ui),
             _ => {}
         });
     });
@@ -277,4 +280,69 @@ fn format_chart(app: &mut SheetApp, ui: &mut Ui) {
             ui.data_mut(|d| d.remove::<(f32, f32)>(draft));
         }
     });
+}
+
+fn queries(app: &mut SheetApp, ui: &mut Ui) {
+    let tr = |ui: &Ui, s: &'static str| crate::i18n::current(ui.ctx()).tr(s);
+    ui.horizontal(|ui| {
+        if ui.button(tr(ui, "New Query")).clicked() {
+            app.open_dialog("queryEditor", json!({}));
+        }
+        if ui.button(tr(ui, "Refresh All")).clicked() {
+            app.run_or_alert("data.refreshAll", json!({}));
+        }
+    });
+    ui.add_space(6.0);
+    let list = app.session.run("data.query.list", json!({})).unwrap_or(Json::Null);
+    let items = list.as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        ui.label(egui::RichText::new(tr(ui, "This workbook has no queries. Choose New Query, or From Table/Range on the Data tab.")).italics());
+    }
+    let t = Tokens::get(ui.ctx());
+    for q in items {
+        let name = q["name"].as_str().unwrap_or("").to_string();
+        egui::Frame::NONE.fill(t.input_bg).corner_radius(6.0).inner_margin(8.0).stroke(egui::Stroke::new(1.0, t.input_border)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(&name).strong());
+            if let Some(d) = q["description"].as_str().filter(|d| !d.is_empty()) {
+                ui.label(egui::RichText::new(d).small().color(t.text_dim));
+            }
+            match (q["sheet"].as_str(), q["range"].as_str()) {
+                (Some(sheet), Some(range)) => {
+                    let place = format!("{}!{range}", gridcraft_engine::formula::quote_sheet(sheet));
+                    if ui.link(format!("{} {place}", tr(ui, "Loaded to"))).clicked() {
+                        let _ = app.run("sheet.activate", json!({"sheet": sheet}));
+                        let _ = app.run("selection.set", json!({"range": range}));
+                        app.grid.ensure_visible = true;
+                    }
+                }
+                _ if q.get("loadTo").is_some() => {
+                    ui.label(egui::RichText::new(tr(ui, "Its table was deleted: load it again.")).small().color(t.text_dim));
+                }
+                _ => {
+                    ui.label(egui::RichText::new(tr(ui, "Connection only")).small().color(t.text_dim));
+                }
+            }
+            if let Some(e) = q["error"].as_str() {
+                ui.label(egui::RichText::new(format!("{}: {e}", tr(ui, "Syntax error"))).small().color(t.danger));
+            }
+            ui.horizontal(|ui| {
+                if ui.small_button(tr(ui, "Edit")).clicked() {
+                    app.open_dialog("queryEditor", json!({"name": name}));
+                }
+                let loaded = q["sheet"].is_string();
+                if loaded {
+                    if ui.small_button(tr(ui, "Refresh")).clicked() {
+                        app.run_or_alert("data.query.refresh", json!({"name": name}));
+                    }
+                } else if ui.small_button(tr(ui, "Load")).clicked() {
+                    app.run_or_alert("data.query.load", json!({"name": name}));
+                }
+                if ui.small_button(tr(ui, "Delete")).on_hover_text(tr(ui, "Deletes the query; its table stays as an ordinary table.")).clicked() {
+                    app.run_or_alert("data.query.delete", json!({"name": name}));
+                }
+            });
+        });
+        ui.add_space(6.0);
+    }
 }

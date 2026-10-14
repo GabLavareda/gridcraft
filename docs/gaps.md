@@ -105,8 +105,10 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   queries kept in the workbook, loaded to tables and refreshed (`data.query.*`,
   `data.refreshAll`), saved and read as Excel's Data Mashup part. Sources: the workbook's own
   tables, CSV, JSON, local files, other workbooks. [power-query.md](power-query.md)
-- **Missing:** the Power Query Editor (queries pane, applied steps, preview, transform commands);
-  Get Data, From Text/CSV and From Table/Range making queries; From Web, databases and folders;
+- **In the interface:** the Query Editor (applied steps, formula, preview) and the Queries &
+  Connections pane; From Table/Range, New Query and Refresh All on the Data tab.
+- **Missing:** the editor's transform commands that write steps; Get Data and From Text/CSV
+  making queries; From Web, databases and folders;
   connections and query tables for new queries, so that Excel refreshes them; relationships and
   the data model (`data.fromWeb`, `data.relationships` missing). Not verified in Excel.
   **Estimate:** 40–70 h.
@@ -167,6 +169,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | §12: Query Editor and Queries & Connections pane |
 | 2026-10-12 | minor | §12: queries in the Power Query M language run, load to tables and refresh; saved as the Data Mashup part. The editor and more sources remain |
 | 2026-10-12 | minor | Desktop File > Print now discovers printers and submits PDF jobs through pinned craft-print with printer choice, copies, duplex and grayscale; browser printing and PDF export remain available. Remaining print parity includes page ranges and driver-specific tray/options UI; physical printer fidelity needs hardware validation. |
 | 2026-10-11 | minor | §6: iterative calculation for circular references landed (Maximum Iterations, Maximum Change) |

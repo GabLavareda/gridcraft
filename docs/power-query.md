@@ -1,6 +1,6 @@
 # Queries (Get & Transform)
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** major (created: the M language engine, query commands and the Data Mashup file part) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-14 · **Change:** minor (the Query Editor and the Queries & Connections pane) · **Target:** Microsoft Excel (Microsoft 365)
 
 A query is a named formula in the Power Query M language that produces a table. GridCraft keeps
 queries in the workbook, runs them, and loads their results into tables on sheets. This page says
@@ -14,12 +14,15 @@ what is there, how it behaves and what is not there yet. The gap entry is
 | The M language: lexer, parser, evaluator | `crates/mquery` | Complete to the public language specification, except metadata (`meta` keeps the value and drops the metadata) and query folding (everything is evaluated here, eagerly) |
 | The standard library | `crates/mquery/src/stdlib` | 420 functions and 92 constants: `Table.*` (78) and `#table`, `List.*` (67), `Text.*`, `Number.*`, `Date.*`/`Time.*`/`DateTime.*`/`Duration.*`, `Record.*`, `Splitter.*`, `Combiner.*`, `Comparer.*`, `Replacer.*`, `Value.*`, `Type.*`, `Csv.Document`, `Json.Document`, `Excel.CurrentWorkbook`, `Excel.Workbook`, `File.Contents`, text encodings and binary values |
 | Queries in the model | `Workbook::queries` (`crates/model`) | Name, formula, description, the table it loads to |
-| Commands | `crates/engine/src/cmd/query.rs` | `data.query.add`, `.set`, `.delete`, `.load`, `.refresh`, `.list`, `.preview`, `.functions`; `data.refreshAll` refreshes queries, then PivotTables |
+| Commands | `crates/engine/src/cmd/query.rs` | `data.query.add`, `.set`, `.delete`, `.load`, `.refresh`, `.list`, `.preview`, `.parse`, `.functions`; `data.refreshAll` refreshes queries, then PivotTables |
+| Interface | `crates/ui-egui/src/query_editor.rs`, `panes.rs`, `ribbon.rs` | Data tab: From Table/Range, New Query, Refresh All, Queries & Connections. The Query Editor: name, description, applied steps, the formula, a preview of the result or of one step. The Queries & Connections pane: each query with where it loads, Edit, Refresh or Load, Delete |
 | In the file | `crates/xlsx/src/mashup.rs` | Read and written as the Data Mashup custom XML part ([MS-QDEFF]), the part Excel keeps its queries in |
 
-There is no query editor window yet: queries are made and changed through the commands (CLI, MCP,
-control channel, scripts). The ribbon's Get Data, From Text/CSV and From Table/Range still import
-once, without making a query.
+In the interface, Data › From Table/Range opens the Query Editor on a query that reads the table
+at the selection, New Query on an example, and the Queries & Connections pane lists the queries.
+The editor writes M: there are no transform commands that add steps yet. Get Data (Text/CSV)
+still imports once, without making a query. Everything the interface does is also a command
+(CLI, MCP, control channel, scripts).
 
 ## How it behaves
 
@@ -107,9 +110,11 @@ ordinary tables and the queries show as connection only, since no connection is 
 
 ## Not there yet
 
-- The Power Query Editor: queries pane, applied steps, preview grid, the ribbon's transform
-  commands that write steps.
-- Get Data, From Text/CSV and From Table/Range making queries instead of importing once.
+- In the Query Editor: commands that add steps (filter, remove columns, change type, group…)
+  by writing M, column headers to act on, renaming or deleting steps, IntelliSense.
+- Get Data and From Text/CSV making queries instead of importing once.
+- A preview or refresh runs on the interface's thread: a slow query holds the window until it
+  ends.
 - `Web.Contents`, databases, folders (`Folder.Files`), XML and HTML tables, PDF, Parquet.
 - Connections and query tables for new queries, so that Excel refreshes them itself.
 - Relationships and the data model.
@@ -124,4 +129,5 @@ ordinary tables and the queries show as connection only, since no connection is 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | The Query Editor (steps, formula, preview), the Queries & Connections pane, and From Table/Range, New Query, Refresh All on the Data tab; `data.query.parse` |
 | 2026-10-12 | major | Created: M language engine (`crates/mquery`), query commands, load and refresh to tables, Data Mashup part read and written |

@@ -85,7 +85,39 @@ pub fn specs() -> Vec<CommandSpec> {
             preview
         ),
         cmd!(query "data.query.functions", "Functions", [], None, "{prefix?} → the Power Query M library: names of functions and constants", always, functions),
+        cmd!(
+            query "data.query.parse",
+            "Check Syntax",
+            [],
+            None,
+            "{formula} → {steps: [{name, formula}], result?: step name} when the formula parses, else {error, line, column}; nothing runs",
+            always,
+            parse
+        ),
     ]
+}
+
+/// Parses a formula without running it: its steps for an editor, or where its syntax fails.
+fn parse(_: &mut Session, p: &Json) -> Result<Json> {
+    const C: &str = "data.query.parse";
+    let formula = str_param(p, "formula").ok_or_else(|| bad(C, "missing `formula`"))?;
+    if formula.len() > MAX_FORMULA {
+        return Err(bad(C, "the formula is too long"));
+    }
+    Ok(match mq::steps(formula) {
+        Ok(steps) => {
+            let list: Vec<Json> =
+                steps.steps.iter().map(|st| json!({"name": st.name, "formula": formula.get(st.span.0..st.span.1).unwrap_or("")})).collect();
+            match steps.result {
+                Some(r) => json!({"steps": list, "result": r}),
+                None => json!({"steps": list}),
+            }
+        }
+        Err(e) => {
+            let (line, column) = e.line_col(formula);
+            json!({"error": e.message, "line": line, "column": column})
+        }
+    })
 }
 
 fn other(message: String) -> EngineError {
@@ -640,6 +672,14 @@ mod tests {
         assert_eq!((p["rows"].as_array().unwrap().len(), p["moreRows"].as_u64()), (1, Some(1)));
         let f = s.execute("data.query.functions", json!({"prefix": "table.select"})).unwrap();
         assert_eq!(f, json!(["Table.SelectColumns", "Table.SelectRows", "Table.SelectRowsWithErrors"]));
+        // Parsing alone, for an editor: steps, or where the syntax fails. Nothing runs.
+        let p = s.execute("data.query.parse", json!({"formula": IN_STOCK})).unwrap();
+        assert_eq!((p["steps"].as_array().unwrap().len(), p["result"].as_str()), (3, Some("Valued")));
+        assert_eq!(p["steps"][0], json!({"name": "Source", "formula": "Excel.CurrentWorkbook(){[Name=\"Stock\"]}[Content]"}));
+        let p = s.execute("data.query.parse", json!({"formula": "let\n  a = 1,\n  b = )\nin a"})).unwrap();
+        assert_eq!((p["line"].as_u64(), p["column"].as_u64(), p["error"].as_str()), (Some(3), Some(7), Some("Expected an expression.")));
+        assert_eq!(s.execute("data.query.parse", json!({"formula": "1 + 2"})).unwrap(), json!({"steps": []}));
+        assert!(s.execute("data.query.parse", json!({})).is_err());
     }
 
     #[test]
