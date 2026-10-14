@@ -1619,6 +1619,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gridcraft-mquery"
+version = "0.6.1"
+
+[[package]]
 name = "gridcraft-numfmt"
 version = "0.6.1"
 dependencies = [

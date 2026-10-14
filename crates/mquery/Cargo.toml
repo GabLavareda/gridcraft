@@ -1,0 +1,11 @@
+[package]
+name = "gridcraft-mquery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Clean-room Power Query M formula language: lexer, parser, evaluator and standard library"
+
+[lints]
+workspace = true
+
+[dependencies]
