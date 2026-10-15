@@ -129,6 +129,8 @@ pub enum Icon {
     OpenFolder,
     Info,
     Print,
+    /// Data › From Database: a cylinder.
+    Database,
 }
 
 struct G<'a> {
@@ -699,6 +701,24 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, c: Color32) {
             g.circle(8.0, 8.0, 6.5, None, Some(c));
             g.line(&[(8.0, 7.0), (8.0, 11.8)], c, 1.3);
             g.circle(8.0, 4.8, 0.8, Some(c), None);
+        }
+        Icon::Database => {
+            use std::f32::consts::PI;
+            // Points on the ellipse around the cylinder at height `cy`, from angle `a` to `b`.
+            let ring = |cy: f32, a: f32, b: f32| -> Vec<(f32, f32)> {
+                (0..=16)
+                    .map(|i| {
+                        let t = a + (b - a) * i as f32 / 16.0;
+                        (8.0 + 5.5 * t.cos(), cy + 1.8 * t.sin())
+                    })
+                    .collect()
+            };
+            g.poly(&ring(3.5, 0.0, 2.0 * PI), BLUE);
+            g.line(&ring(3.5, 0.0, 2.0 * PI), c, 1.1);
+            g.line(&[(2.5, 3.5), (2.5, 12.5)], c, 1.1);
+            g.line(&[(13.5, 3.5), (13.5, 12.5)], c, 1.1);
+            g.line(&ring(8.0, 0.0, PI), c, 1.0);
+            g.line(&ring(12.5, 0.0, PI), c, 1.1);
         }
         Icon::Print => {
             g.line(&[(4.5, 5.5), (4.5, 1.5), (11.5, 1.5), (11.5, 5.5)], c, 1.1);

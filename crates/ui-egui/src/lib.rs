@@ -12,6 +12,7 @@ mod cell_pictures;
 pub mod chartview;
 pub mod control;
 pub mod credits;
+pub mod database_dialog;
 pub mod dialogs;
 pub mod editor;
 pub mod fonts;
@@ -169,6 +170,8 @@ pub struct Services {
     pub pick_save: Option<Box<dyn Fn(&str) -> Option<String>>>,
     /// Native picture picker (PNG/JPEG), separate from workbook opening.
     pub pick_picture: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Native picker for a SQLite database file (Data › From Database).
+    pub pick_database: Option<Box<dyn Fn() -> Option<String>>>,
     /// Browser picture picker. Each dialog owns its inbox, so canceled picks cannot
     /// insert into a subsequent dialog or open the image as a workbook.
     pub pick_picture_async: Option<Box<dyn Fn(Inbox)>>,
@@ -352,8 +355,14 @@ impl SheetApp {
         if let Some(r) = self.run_ui_command(id, &params) {
             return r;
         }
+        // Commands that run queries may find a database that wants a login or an approval:
+        // ask for it, then run the command again.
+        let retry = (id.starts_with("data.query.") || id == "data.refreshAll").then(|| json!({"id": id, "params": params.clone()}));
         let r = self.session.run(id, params);
         self.after_engine();
+        if let Some(retry) = retry {
+            database_dialog::ask_for_needs(self, Some(retry));
+        }
         if id == "file.exportPdf"
             && let Ok(r) = &r
         {

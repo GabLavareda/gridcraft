@@ -1879,6 +1879,12 @@ fn data(app: &mut SheetApp, ui: &mut Ui) {
     }
     // Queries (Get & Transform): made and edited in the Query Editor, listed in their pane.
     ui.vertical(|ui| {
+        let __k =
+            small_button(ui, Icon::Database, "From Database", "Make a query that reads a SQL Server, PostgreSQL, MySQL or SQLite database", false);
+        control_keytip(app, ui, &__k, "data.fromDatabase");
+        if __k.clicked() {
+            app.open_dialog("fromDatabase", json!({}));
+        }
         if small_button(ui, Icon::Table, "From Table/Range", "Make a query that reads the table at the selection", false).clicked() {
             app.open_dialog("queryEditor", json!({"fromSelection": true}));
         }

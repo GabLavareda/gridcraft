@@ -83,6 +83,8 @@ fn run_preview(app: &mut SheetApp, d: &mut Dialog) {
         Err(e) => {
             d.values.remove("preview");
             d.values.insert("previewError".into(), json!(crate::clean_error(&e)));
+            // A database that wants a login or an approval asks for it over the editor.
+            crate::database_dialog::ask_for_needs(app, None);
         }
     }
     d.values.insert("previewFor".into(), json!(text(&d.values, "formula")));
@@ -117,7 +119,7 @@ fn save(app: &mut SheetApp, d: &mut Dialog) -> bool {
 }
 
 /// A preview cell as text, and whether it holds an error.
-fn cell_text(v: &Json) -> (String, Option<String>) {
+pub(crate) fn cell_text(v: &Json) -> (String, Option<String>) {
     match v {
         Json::Null => ("null".into(), None),
         Json::Bool(b) => ((if *b { "TRUE" } else { "FALSE" }).into(), None),

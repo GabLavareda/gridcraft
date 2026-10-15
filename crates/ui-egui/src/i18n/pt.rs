@@ -178,6 +178,37 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Preview" => "Visualizar",
         "Step" => "Etapa",
         "Choose Preview to run the query." => "Escolha Visualizar para executar a consulta.",
+        // From Database
+        "From Database" => "Do Banco de Dados",
+        "Make a query that reads a SQL Server, PostgreSQL, MySQL or SQLite database" => {
+            "Criar uma consulta que lê um banco de dados SQL Server, PostgreSQL, MySQL ou SQLite"
+        }
+        "Database type" => "Tipo de banco",
+        "Host" => "Host",
+        "Port" => "Porta",
+        "Database" => "Banco de dados",
+        "Login" => "Login",
+        "Password" => "Senha",
+        "Encrypt connection" => "Criptografar conexão",
+        "Trust server certificate" => "Confiar no certificado do servidor",
+        "Accept a certificate the server signed itself" => "Aceitar um certificado que o próprio servidor assinou",
+        "Connect" => "Conectar",
+        "The login is kept for this session only, never in the workbook." => "O login fica guardado só nesta sessão, nunca na pasta de trabalho.",
+        "This query needs a login for its database." => "Esta consulta precisa de um login para o banco de dados dela.",
+        "Tables" => "Tabelas",
+        "view" => "exibição",
+        "Databases" => "Bancos de dados",
+        "The database has no tables this login can read." => "O banco de dados não tem tabelas que este login possa ler.",
+        "SQL statement (optional)" => "Instrução SQL (opcional)",
+        "Choose a table to see its first rows." => "Escolha uma tabela para ver as primeiras linhas.",
+        "First" => "Primeiras",
+        "rows shown." => "linhas mostradas.",
+        "Transform Data" => "Transformar Dados",
+        "Native Database Query" => "Consulta Nativa de Banco de Dados",
+        "A query is about to run this SQL. SQL can change the database: run it only if you trust where the query came from." => {
+            "Uma consulta vai executar este SQL. SQL pode alterar o banco de dados: execute somente se você confia na origem da consulta."
+        }
+        "Run" => "Executar",
         "Load to a new sheet" => "Carregar em uma nova planilha",
         "Cancel" => "Cancelar",
         "Calculation\nOptions" => "Opções de\nCálculo",

@@ -171,6 +171,13 @@ fn services() -> Services {
                 .pick_file()
                 .and_then(|p| p.to_str().map(str::to_string))
         })),
+        pick_database: Some(Box::new(|| {
+            rfd::FileDialog::new()
+                .add_filter("SQLite Database", &["db", "sqlite", "sqlite3", "db3"])
+                .add_filter("All Files", &["*"])
+                .pick_file()
+                .and_then(|p| p.to_str().map(str::to_string))
+        })),
         pick_save: Some(Box::new(|suggested: &str| {
             let path = std::path::Path::new(suggested);
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Book1").to_string();

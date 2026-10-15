@@ -783,6 +783,8 @@ impl Dialog {
             }
             "pickList" => Dialog::custom("pickList", "Pick From List", json!({})),
             "queryEditor" => Dialog::custom("queryEditor", "Query Editor", crate::query_editor::defaults(app, &params)?),
+            "fromDatabase" => Dialog::custom("fromDatabase", "From Database", crate::database_dialog::defaults(app, &params)),
+            "nativeQuery" => Dialog::custom("nativeQuery", "Native Database Query", params.clone()),
             "saveCopy" => Dialog::custom("saveCopy", "Save a Copy", json!({"format": p("format")})),
             "saveChanges" => Dialog::custom("saveChanges", "Save Changes?", json!({"title": p("title")})),
             "start" => Dialog::custom("start", "GridCraft", json!({})),
@@ -890,6 +892,8 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
         "insertFunction" | "commandSearch" | "nameManager" | "manageRules" | "journal" | "agents" | "macros" => 520.0,
         "recommendedCharts" => 600.0,
         "queryEditor" => 820.0,
+        "fromDatabase" => 760.0,
+        "nativeQuery" => 520.0,
         "analysisToolPak" => 420.0,
         "solver" => 460.0,
         _ => 380.0,
@@ -921,6 +925,8 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                 "solverResults" => solver_results(app, ui, &mut d, &mut open),
                 "spelling" => spelling(app, ui, &mut d, &mut open),
                 "queryEditor" => crate::query_editor::show(app, ui, &mut d, &mut open),
+                "fromDatabase" => crate::database_dialog::show(app, ui, &mut d, &mut open),
+                "nativeQuery" => crate::database_dialog::approval(app, ui, &mut d, &mut open),
                 "agents" => {
                     ui.label("GridCraft is fully drivable by agents. Every menu item, button and gesture is a command:");
                     ui.add_space(4.0);
