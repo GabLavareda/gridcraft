@@ -34,13 +34,13 @@ pub mod value;
 pub use ast::{SectionMember, Step, Steps};
 pub use culture::Culture;
 pub use error::{EResult, Error, EvalError, Fatal, MError, ParseError};
-pub use host::{Host, NoHost, Now, WorkbookPart};
+pub use host::{DataSource, Database, Host, NoHost, Now, TableRef, WorkbookPart};
 pub use interp::{DEFAULT_MAX_DEPTH, Interp, MAX_CELLS, MAX_ITEMS, MAX_TEXT};
 pub use lexer::{quote_identifier, quote_text};
 pub use parser::{parse, parse_section, steps};
 pub use stdlib::data::table_from_csv;
 pub use value::{
-    Facet, Field, Function, ListData, Names, Record, Row, Slot, Table, Type, Value, compare_values, number_to_text, render, values_equal,
+    Facet, Field, Function, Lazy, ListData, Names, Record, Row, Slot, Table, Type, Value, compare_values, number_to_text, render, values_equal,
 };
 
 /// The names of every library function and constant, sorted.

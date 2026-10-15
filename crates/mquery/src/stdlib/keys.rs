@@ -103,9 +103,9 @@ impl Comparer {
 }
 
 fn encode_slot(s: &Slot, ignore_case: bool, out: &mut Vec<u8>, depth: usize) {
-    match s {
-        Slot::Val(v) => encode(v, ignore_case, out, depth),
-        Slot::Err(e) => {
+    match s.result() {
+        Ok(v) => encode(&v, ignore_case, out, depth),
+        Err(e) => {
             out.push(15);
             push_bytes(out, e.message.as_bytes());
         }

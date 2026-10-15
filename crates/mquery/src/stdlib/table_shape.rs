@@ -320,21 +320,21 @@ fn expand_table_column(_: &mut Interp, a: &[Value]) -> EResult<Value> {
     let new = new_names(&inner, arg(a, 3))?;
     let n = inner.len();
     // Column types come from the first nested table.
-    let first = t.rows.iter().find_map(|r| match r.get(at) {
-        Some(Slot::Val(Value::Table(x))) => Some(x.clone()),
+    let first = t.rows.iter().find_map(|r| match r.get(at).map(Slot::result) {
+        Some(Ok(Value::Table(x))) => Some(x),
         _ => None,
     });
     let types =
         inner.iter().map(|c| first.as_ref().and_then(|x| x.column_index(c).and_then(|i| x.types.get(i).cloned())).unwrap_or(Type::Any)).collect();
     replace_column(&t, at, new, types, |cell| {
-        Ok(match cell {
-            Slot::Val(Value::Table(x)) if !x.rows.is_empty() => {
+        Ok(match cell.result() {
+            Ok(Value::Table(x)) if !x.rows.is_empty() => {
                 let idx: Vec<Option<usize>> = inner.iter().map(|c| x.column_index(c)).collect();
                 x.rows.iter().map(|r| idx.iter().map(|i| i.map_or(Slot::NULL, |i| slot_at(r, i))).collect()).collect()
             }
-            Slot::Val(Value::Table(_) | Value::Null) => vec![vec![Slot::NULL; n]],
-            Slot::Val(v) => not_expandable(v, "a table", n),
-            Slot::Err(e) => error_cells(e, n),
+            Ok(Value::Table(_) | Value::Null) => vec![vec![Slot::NULL; n]],
+            Ok(v) => not_expandable(&v, "a table", n),
+            Err(e) => error_cells(&e, n),
         })
     })
 }
@@ -346,11 +346,11 @@ fn expand_record_column(_: &mut Interp, a: &[Value]) -> EResult<Value> {
     let new = new_names(&inner, arg(a, 3))?;
     let n = inner.len();
     replace_column(&t, at, new, vec![Type::Any; n], |cell| {
-        Ok(match cell {
-            Slot::Val(Value::Record(r)) => vec![inner.iter().map(|c| r.slot(c).cloned().unwrap_or(Slot::NULL)).collect()],
-            Slot::Val(Value::Null) => vec![vec![Slot::NULL; n]],
-            Slot::Val(v) => not_expandable(v, "a record", n),
-            Slot::Err(e) => error_cells(e, n),
+        Ok(match cell.result() {
+            Ok(Value::Record(r)) => vec![inner.iter().map(|c| r.slot(c).cloned().unwrap_or(Slot::NULL)).collect()],
+            Ok(Value::Null) => vec![vec![Slot::NULL; n]],
+            Ok(v) => not_expandable(&v, "a record", n),
+            Err(e) => error_cells(&e, n),
         })
     })
 }
@@ -360,11 +360,11 @@ fn expand_list_column(_: &mut Interp, a: &[Value]) -> EResult<Value> {
     let name = text(a, 1)?;
     let at = col(&t, &name)?;
     replace_column(&t, at, vec![name], vec![Type::Any], |cell| {
-        Ok(match cell {
-            Slot::Val(Value::List(l)) if !l.is_empty() => l.items.iter().map(|s| vec![s.clone()]).collect(),
-            Slot::Val(Value::List(_) | Value::Null) => vec![vec![Slot::NULL]],
-            Slot::Val(v) => not_expandable(v, "a list", 1),
-            Slot::Err(e) => error_cells(e, 1),
+        Ok(match cell.result() {
+            Ok(Value::List(l)) if !l.is_empty() => l.items.iter().map(|s| vec![s.clone()]).collect(),
+            Ok(Value::List(_) | Value::Null) => vec![vec![Slot::NULL]],
+            Ok(v) => not_expandable(&v, "a list", 1),
+            Err(e) => error_cells(&e, 1),
         })
     })
 }
@@ -386,18 +386,18 @@ fn aggregate_table_column(it: &mut Interp, a: &[Value]) -> EResult<Value> {
     let n = specs.len();
     let new = specs.iter().map(|s| s.2.clone()).collect();
     replace_column(&t, at, new, vec![Type::Any; n], |cell| {
-        Ok(match cell {
-            Slot::Val(Value::Table(x)) => {
+        Ok(match cell.result() {
+            Ok(Value::Table(x)) => {
                 let mut cells = Vec::with_capacity(n);
                 for (inner, f, _) in &specs {
-                    let column = table_column(x, col(x, inner)?);
+                    let column = table_column(&x, col(&x, inner)?);
                     cells.push(Slot::capture(it.call1(f, column))?);
                 }
                 vec![cells]
             }
-            Slot::Val(Value::Null) => vec![vec![Slot::NULL; n]],
-            Slot::Val(v) => not_expandable(v, "a table", n),
-            Slot::Err(e) => error_cells(e, n),
+            Ok(Value::Null) => vec![vec![Slot::NULL; n]],
+            Ok(v) => not_expandable(&v, "a table", n),
+            Err(e) => error_cells(&e, n),
         })
     })
 }
@@ -500,14 +500,14 @@ fn split_column(it: &mut Interp, a: &[Value]) -> EResult<Value> {
     // Split every cell first: without names, the widest split decides the number of columns.
     let mut parts: Vec<Result<Vec<Slot>, Slot>> = Vec::with_capacity(t.rows.len());
     for r in &t.rows {
-        parts.push(match r.get(at) {
-            Some(Slot::Val(Value::Null)) | None => Ok(Vec::new()),
-            Some(Slot::Val(v)) => match Slot::capture(it.call1(splitter, v.clone()))? {
+        parts.push(match r.get(at).map(Slot::result) {
+            Some(Ok(Value::Null)) | None => Ok(Vec::new()),
+            Some(Ok(v)) => match Slot::capture(it.call1(splitter, v))? {
                 Slot::Val(Value::List(l)) => Ok(l.items.clone()),
                 Slot::Val(other) => Ok(vec![Slot::Val(other)]),
-                e @ Slot::Err(_) => Err(e),
+                e => Err(e),
             },
-            Some(e @ Slot::Err(_)) => Err(e.clone()),
+            Some(Err(e)) => Err(Slot::Err(e)),
         });
     }
     let new: Vec<Rc<str>> = match arg(a, 3) {

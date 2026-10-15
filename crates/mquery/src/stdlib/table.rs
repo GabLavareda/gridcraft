@@ -650,8 +650,8 @@ fn transform_columns(it: &mut Interp, a: &[Value]) -> EResult<Value> {
         }
     }
     let idx: Vec<usize> = (0..t.width()).filter(|i| fns.get(*i).is_some_and(Option::is_some)).collect();
-    let rows = map_cells(&t, &idx, |i, _, cell| match (cell, fns.get(i)) {
-        (Slot::Val(v), Some(Some(f))) => Slot::capture(it.call1(f, v.clone())),
+    let rows = map_cells(&t, &idx, |i, _, cell| match (cell.value(), fns.get(i)) {
+        (Some(v), Some(Some(f))) => Slot::capture(it.call1(f, v.clone())),
         _ => Ok(cell.clone()),
     })?;
     make(t.columns.to_vec(), types, rows)
@@ -699,8 +699,8 @@ fn transform_column_types(it: &mut Interp, a: &[Value]) -> EResult<Value> {
         }
     }
     let idx: Vec<usize> = (0..t.width()).filter(|i| targets.get(*i).is_some_and(Option::is_some)).collect();
-    let rows = map_cells(&t, &idx, |i, _, cell| match (cell, targets.get(i)) {
-        (Slot::Val(v), Some(Some(ty))) => Slot::capture(convert::convert(v, ty, culture, offset)),
+    let rows = map_cells(&t, &idx, |i, _, cell| match (cell.value(), targets.get(i)) {
+        (Some(v), Some(Some(ty))) => Slot::capture(convert::convert(v, ty, culture, offset)),
         _ => Ok(cell.clone()),
     })?;
     make(t.columns.to_vec(), types, rows)
@@ -762,8 +762,8 @@ fn replace_error_values(_: &mut Interp, a: &[Value]) -> EResult<Value> {
         }
     }
     let idx: Vec<usize> = (0..t.width()).filter(|i| with.get(*i).is_some_and(Option::is_some)).collect();
-    let rows = map_cells(&t, &idx, |i, _, cell| match (cell, with.get(i)) {
-        (Slot::Err(_), Some(Some(v))) => Ok(Slot::Val(v.clone())),
+    let rows = map_cells(&t, &idx, |i, _, cell| match with.get(i) {
+        Some(Some(v)) if cell.is_error() => Ok(Slot::Val(v.clone())),
         _ => Ok(cell.clone()),
     })?;
     Ok(with_rows(&t, rows))
@@ -783,11 +783,11 @@ fn rows_by_errors(a: &[Value], keep_errors: bool) -> EResult<Value> {
 
 /// Orders cells for sorting: errors come last.
 fn compare_slots(a: &Slot, b: &Slot) -> Ordering {
-    match (a, b) {
-        (Slot::Val(x), Slot::Val(y)) => compare_values(x, y),
-        (Slot::Err(_), Slot::Err(_)) => Ordering::Equal,
-        (Slot::Err(_), _) => Ordering::Greater,
-        (_, Slot::Err(_)) => Ordering::Less,
+    match (a.result(), b.result()) {
+        (Ok(x), Ok(y)) => compare_values(&x, &y),
+        (Err(_), Err(_)) => Ordering::Equal,
+        (Err(_), _) => Ordering::Greater,
+        (_, Err(_)) => Ordering::Less,
     }
 }
 

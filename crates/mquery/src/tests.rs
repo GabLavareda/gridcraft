@@ -1032,3 +1032,141 @@ fn the_depth_limit_can_be_raised() {
         .join()
         .unwrap();
 }
+
+// ---------------------------------------------------------------- databases
+
+/// A database in memory that logs what it is asked: the view `dbo.big` (which fails) and the
+/// tables `dbo.orders` and `sales.orders`.
+struct FakeDb {
+    name: String,
+    log: Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl crate::Database for FakeDb {
+    fn tables(&self) -> Result<Vec<crate::TableRef>, String> {
+        self.log.borrow_mut().push("tables".into());
+        let t = |schema: &str, name: &str, view| crate::TableRef { schema: schema.into(), name: name.into(), view };
+        Ok(vec![t("dbo", "big", true), t("dbo", "orders", false), t("sales", "orders", false)])
+    }
+    fn table(&self, schema: &str, name: &str) -> Result<Table, String> {
+        self.log.borrow_mut().push(format!("table {schema}.{name}"));
+        if name == "big" {
+            return Err("big is too big".into());
+        }
+        let row = |id: f64, who: &str| -> crate::Row { [Slot::Val(Value::Number(id)), Slot::Val(Value::text(who))].into_iter().collect() };
+        Ok(Table {
+            columns: [Rc::from("Id"), Rc::from("Who")].into_iter().collect(),
+            types: vec![crate::Type::Number(crate::Facet::Int64), crate::Type::Text].into(),
+            rows: vec![row(1.0, &self.name), row(2.0, schema)],
+        })
+    }
+    fn query(&self, sql: &str) -> Result<Table, String> {
+        self.log.borrow_mut().push(format!("query {sql}"));
+        Ok(Table {
+            columns: [Rc::from("sql")].into_iter().collect(),
+            types: vec![crate::Type::Text].into(),
+            rows: vec![[Slot::Val(Value::text(sql))].into_iter().collect()],
+        })
+    }
+    fn databases(&self) -> Result<Vec<String>, String> {
+        Ok(vec!["one".into(), "two".into()])
+    }
+    fn open(&self, database: &str) -> Result<Rc<dyn crate::Database>, String> {
+        self.log.borrow_mut().push(format!("open {database}"));
+        Ok(Rc::new(FakeDb { name: database.into(), log: self.log.clone() }))
+    }
+}
+
+#[derive(Default)]
+struct DbHost {
+    log: Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl Host for DbHost {
+    fn database(&self, source: &crate::DataSource) -> Result<Rc<dyn crate::Database>, String> {
+        self.log.borrow_mut().push(format!("connect {} {} {}", source.kind, source.server, source.database));
+        if source.server == "nowhere" {
+            return Err("Credentials are required to connect to nowhere.".into());
+        }
+        Ok(Rc::new(FakeDb { name: source.database.clone(), log: self.log.clone() }))
+    }
+}
+
+#[test]
+fn database_tables_are_read_only_when_opened() {
+    let host = DbHost::default();
+    let src = r#"let Source = Sql.Database("srv,1500", "shop"), Orders = Source{[Schema = "dbo", Item = "orders"]}[Data] in Orders"#;
+    assert_eq!(run_with(&host, src), r#"#table({"Id", "Who"}, {{1, "shop"}, {2, "dbo"}})"#);
+    // One connection, one list of tables, one table: not `big`, not `sales.orders`.
+    assert_eq!(*host.log.borrow(), vec!["connect SqlServer srv,1500 shop", "tables", "table dbo.orders"]);
+
+    let nav = r#"let Source = PostgreSQL.Database("pg", "shop") in Table.SelectColumns(Source, {"Name", "Schema", "Item", "Kind"})"#;
+    assert_eq!(
+        run_with(&host, nav),
+        r#"#table({"Name", "Schema", "Item", "Kind"}, {{"dbo.big", "dbo", "big", "View"}, {"dbo.orders", "dbo", "orders", "Table"}, {"sales.orders", "sales", "orders", "Table"}})"#
+    );
+    assert!(!host.log.borrow().iter().any(|l| l.contains("big")), "listing doesn't read tables");
+    // A table that fails fails only where it is read.
+    assert_eq!(run_with(&host, r#"Table.RowCount(MySQL.Database("m", "d"))"#), "3");
+    let failed = run_with(&host, r#"try MySQL.Database("m", "d"){[Item = "big"]}[Data]"#);
+    assert!(failed.contains(r#"Reason = "DataSource.Error", Message = "big is too big""#), "{failed}");
+    // Reading a table twice fetches it once.
+    host.log.borrow_mut().clear();
+    let twice = r#"let S = Sql.Database("s", "d"), T = S{1}[Data] in Table.RowCount(T) + Table.RowCount(S{1}[Data])"#;
+    assert_eq!(run_with(&host, twice), "4");
+    assert_eq!(host.log.borrow().iter().filter(|l| l.starts_with("table ")).count(), 1, "{:?}", host.log.borrow());
+    // Tables in the Data column work with the table functions.
+    let all = r#"Table.ExpandTableColumn(Table.SelectRows(Sql.Database("s", "d"), each [Item] = "orders"), "Data", {"Who"})[Who]"#;
+    assert_eq!(run_with(&host, all), r#"{"d", "dbo", "d", "sales"}"#);
+    let counts = r#"Table.TransformColumns(Table.SelectRows(Sql.Database("s", "d"), each [Kind] = "Table"), {"Data", Table.RowCount})[Data]"#;
+    assert_eq!(run_with(&host, counts), "{2, 2}");
+}
+
+#[test]
+fn databases_run_native_queries() {
+    let host = DbHost::default();
+    assert_eq!(run_with(&host, r#"Sql.Database("s", "d", [Query = "select 1"])"#), r#"#table({"sql"}, {{"select 1"}})"#);
+    let pg = r#"Value.NativeQuery(PostgreSQL.Database("p", "d"), "select 2", null, [EnableFolding = true])"#;
+    assert_eq!(run_with(&host, pg), r#"#table({"sql"}, {{"select 2"}})"#);
+    let lite = r#"let S = SQLite.Database("C:\data\shop.db") in Value.NativeQuery(S, "select 3")"#;
+    assert_eq!(run_with(&host, lite), r#"#table({"sql"}, {{"select 3"}})"#);
+    assert!(host.log.borrow().iter().any(|l| l == r"connect SQLite C:\data\shop.db "));
+    // Only a database runs SQL; parameters aren't supported.
+    assert!(run_with(&host, r#"Value.NativeQuery(#table({"a"}, {}), "select 1")"#).contains("A native query runs on a database"));
+    assert!(run_with(&host, r#"Value.NativeQuery(Sql.Database("s", "d"), "select @a", [a = 1])"#).contains("Parameters"));
+    assert!(run_with(&host, r#"Sql.Database("s", "d", [Query = 1])"#).starts_with("ERROR"));
+}
+
+#[test]
+fn databases_list_and_nest() {
+    let host = DbHost::default();
+    let h = r#"let S = Sql.Database("s", "d", [HierarchicalNavigation = true]) in {S[Name], S{[Name = "sales"]}[Data][Name], S{[Name = "dbo"]}[Data]{[Item = "orders"]}[Data][Who]}"#;
+    assert_eq!(run_with(&host, h), r#"{{"dbo", "sales"}, {"orders"}, {"d", "dbo"}}"#);
+    let dbs = r#"let S = Sql.Databases("s") in {S[Name], S{[Name = "two"]}[Data]{[Schema = "dbo", Item = "orders"]}[Data]{0}[Who]}"#;
+    assert_eq!(run_with(&host, dbs), r#"{{"one", "two"}, "two"}"#);
+    assert!(host.log.borrow().iter().any(|l| l == "open two") && !host.log.borrow().iter().any(|l| l == "open one"));
+    // The host's refusal is the query's error; hosts without databases refuse every one.
+    assert_eq!(run_with(&host, r#"try Sql.Database("nowhere", "d") otherwise "refused""#), r#""refused""#);
+    assert!(run_with(&host, r#"Sql.Database("nowhere", "d")"#).contains("Credentials are required"));
+    assert!(run_with(&NoHost, r#"Sql.Database("s", "d")"#).contains("Databases aren't available here"));
+    assert!(run_with(&host, r#"Sql.Database("", "d")"#).contains("The server is missing"));
+}
+
+#[test]
+fn lazy_cells_print_without_reading_and_cannot_read_themselves() {
+    let host = DbHost::default();
+    // Printing a navigation table doesn't fetch its tables.
+    let shown = run_with(&host, r#"Sql.Database("s", "d")"#);
+    assert!(shown.contains(r#""dbo.orders""#), "{shown}");
+    assert!(!host.log.borrow().iter().any(|l| l.starts_with("table ")), "{:?}", host.log.borrow());
+    // A lazy value that reads itself is an error, not a hang.
+    let me: Rc<std::cell::RefCell<Option<Rc<crate::Lazy>>>> = Rc::default();
+    let inner = me.clone();
+    let lazy = crate::Lazy::new(move || match inner.borrow().as_ref() {
+        Some(l) => l.force().clone(),
+        None => Ok(Value::Null),
+    });
+    *me.borrow_mut() = Some(lazy.clone());
+    assert!(lazy.force().is_err());
+    me.borrow_mut().take();
+}

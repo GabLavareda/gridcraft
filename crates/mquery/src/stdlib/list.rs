@@ -384,9 +384,9 @@ fn transform(it: &mut Interp, a: &[Value]) -> EResult<Value> {
     let f = function(a, 1)?;
     let mut out = Vec::with_capacity(l.len());
     for s in &l.items {
-        out.push(match s {
-            Slot::Val(v) => Slot::capture(it.call1(f, v.clone()))?,
-            Slot::Err(_) => s.clone(),
+        out.push(match s.result() {
+            Ok(v) => Slot::capture(it.call1(f, v))?,
+            Err(e) => Slot::Err(e),
         });
     }
     Ok(Value::list(out))

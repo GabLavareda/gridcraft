@@ -1,13 +1,15 @@
 //! M values.
 //!
 //! Containers (lists, records, table rows) hold [`Slot`]s: a value, or the error raised while
-//! computing it, so that one bad cell doesn't fail the whole table until it is read.
+//! computing it, so that one bad cell doesn't fail the whole table until it is read, or a value
+//! computed the first time it is read (the tables of a database's navigation table, which are
+//! fetched only when a query opens them).
 //!
 //! Values nest without limit (a list in a record in a list…), so the containers drop their
 //! children through a queue instead of recursively: dropping a value a million levels deep must
 //! not overflow the stack.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -54,6 +56,46 @@ pub enum Value {
 pub enum Slot {
     Val(Value),
     Err(Rc<MError>),
+    /// Computed when first read, then kept.
+    Lazy(Rc<Lazy>),
+}
+
+type Compute = Box<dyn FnOnce() -> Result<Value, Rc<MError>>>;
+
+/// A value computed the first time it is read. The computation can't reach the evaluator, so
+/// what it needs (a database connection) it owns.
+pub struct Lazy {
+    compute: RefCell<Option<Compute>>,
+    done: OnceCell<Result<Value, Rc<MError>>>,
+}
+
+impl Lazy {
+    pub fn new(compute: impl FnOnce() -> Result<Value, Rc<MError>> + 'static) -> Rc<Lazy> {
+        Rc::new(Lazy { compute: RefCell::new(Some(Box::new(compute))), done: OnceCell::new() })
+    }
+
+    /// The value, computing it the first time.
+    pub fn force(&self) -> &Result<Value, Rc<MError>> {
+        if let Some(r) = self.done.get() {
+            return r;
+        }
+        let compute = self.compute.try_borrow_mut().ok().and_then(|mut c| c.take());
+        let r = match compute {
+            Some(f) => f(),
+            // Reading the value while it is being computed.
+            None => Err(Rc::new(MError {
+                reason: Rc::from(crate::error::EXPRESSION_ERROR),
+                message: Rc::from("A value refers to itself while it is being computed."),
+                detail: Value::Null,
+            })),
+        };
+        self.done.get_or_init(|| r)
+    }
+
+    /// Whether it was computed already.
+    pub fn is_forced(&self) -> bool {
+        self.done.get().is_some()
+    }
 }
 
 pub struct ListData {
@@ -350,16 +392,43 @@ impl Slot {
         match self {
             Slot::Val(v) => Ok(v.clone()),
             Slot::Err(e) => Err(EvalError::Raised(e.clone())),
+            Slot::Lazy(l) => match l.force() {
+                Ok(v) => Ok(v.clone()),
+                Err(e) => Err(EvalError::Raised(e.clone())),
+            },
         }
     }
     pub fn value(&self) -> Option<&Value> {
         match self {
             Slot::Val(v) => Some(v),
             Slot::Err(_) => None,
+            Slot::Lazy(l) => l.force().as_ref().ok(),
         }
     }
     pub fn is_error(&self) -> bool {
-        matches!(self, Slot::Err(_))
+        match self {
+            Slot::Val(_) => false,
+            Slot::Err(_) => true,
+            Slot::Lazy(l) => l.force().is_err(),
+        }
+    }
+    /// The value or the error, computing a lazy value.
+    pub fn result(&self) -> Result<Value, Rc<MError>> {
+        match self {
+            Slot::Val(v) => Ok(v.clone()),
+            Slot::Err(e) => Err(e.clone()),
+            Slot::Lazy(l) => l.force().clone(),
+        }
+    }
+    /// The slot with a lazy value computed: a value or an error.
+    pub fn forced(&self) -> Slot {
+        match self {
+            Slot::Lazy(l) => match l.force() {
+                Ok(v) => Slot::Val(v.clone()),
+                Err(e) => Slot::Err(e.clone()),
+            },
+            s => s.clone(),
+        }
     }
     pub fn is_null(&self) -> bool {
         matches!(self, Slot::Val(Value::Null))
@@ -612,11 +681,11 @@ pub fn compare_values(a: &Value, b: &Value) -> Ordering {
 }
 
 fn compare_slots(a: &Slot, b: &Slot, depth: usize) -> Ordering {
-    match (a, b) {
-        (Slot::Val(x), Slot::Val(y)) => compare_at(x, y, depth),
-        (Slot::Err(_), Slot::Err(_)) => Ordering::Equal,
-        (Slot::Err(_), _) => Ordering::Greater,
-        (_, Slot::Err(_)) => Ordering::Less,
+    match (a.result(), b.result()) {
+        (Ok(x), Ok(y)) => compare_at(&x, &y, depth),
+        (Err(_), Err(_)) => Ordering::Equal,
+        (Err(_), _) => Ordering::Greater,
+        (_, Err(_)) => Ordering::Less,
     }
 }
 
@@ -724,6 +793,15 @@ fn render_slot(s: &Slot, out: &mut String, depth: usize) {
             out.push_str("error ");
             out.push_str(&crate::lexer::quote_text(&e.message));
         }
+        // Printing doesn't fetch: a value not read yet shows as what it will be.
+        Slot::Lazy(l) => match l.done.get() {
+            Some(Ok(v)) => render_into(v, out, depth),
+            Some(Err(e)) => {
+                out.push_str("error ");
+                out.push_str(&crate::lexer::quote_text(&e.message));
+            }
+            None => out.push_str("#table({}, {})"),
+        },
     }
 }
 
@@ -890,6 +968,14 @@ impl Slot {
         match self {
             Slot::Val(v) => v.needs_defer(),
             Slot::Err(e) => error_needs_defer(e),
+            Slot::Lazy(l) => {
+                Rc::strong_count(l) == 1
+                    && match l.done.get() {
+                        Some(Ok(v)) => v.is_container(),
+                        Some(Err(e)) => e.detail.is_container(),
+                        None => false,
+                    }
+            }
         }
     }
     /// Moves a slot that owns a container to the drop queue, leaving null behind.

@@ -7,6 +7,7 @@ use crate::value::{Builtin, Facet, ListData, Record, Table, Type, Value};
 
 pub(crate) mod convert;
 pub(crate) mod data;
+pub(crate) mod database;
 pub(crate) mod date;
 pub(crate) mod json;
 pub(crate) mod keys;
@@ -28,7 +29,7 @@ macro_rules! builtin_table {
 pub(crate) use builtin_table;
 
 pub(crate) fn builtins() -> impl Iterator<Item = &'static Builtin> {
-    [text::FNS, number::FNS, list::FNS, record::FNS, table::FNS, table_shape::FNS, date::FNS, misc::FNS, data::FNS, splitter::FNS]
+    [text::FNS, number::FNS, list::FNS, record::FNS, table::FNS, table_shape::FNS, date::FNS, misc::FNS, data::FNS, database::FNS, splitter::FNS]
         .into_iter()
         .flatten()
 }

@@ -7,7 +7,7 @@ use crate::ast::*;
 use crate::culture::Culture;
 use crate::env::{Env, Frame, Thunk};
 use crate::error::{EResult, EXPRESSION_ERROR, Error, EvalError, Fatal, MError, error, raise};
-use crate::host::Host;
+use crate::host::{Database, Host};
 use crate::ops;
 use crate::parser;
 use crate::value::{Closure, Facet, Field, Function, Names, Record, Row, Slot, Table, Type, Value, values_equal};
@@ -51,6 +51,9 @@ pub struct Interp<'h> {
     captured_cap: usize,
     /// State of the generator behind `Number.Random`; zero until first used.
     rng: u64,
+    /// The navigation tables database functions returned, with their databases, for
+    /// `Value.NativeQuery`.
+    databases: Vec<(Weak<Table>, Rc<dyn Database>)>,
 }
 
 pub(crate) fn too_large<T>() -> EResult<T> {
@@ -166,7 +169,18 @@ impl<'h> Interp<'h> {
         }
         globals.insert("Culture.Current", Value::text(host.culture()));
         let root = Env::lazy(&Rc::new(Bindings { names: Rc::from(Vec::new()), exprs: Vec::new(), spans: Vec::new() }), None);
-        Interp { host, globals, root, depth: 0, max_depth: DEFAULT_MAX_DEPTH, ticks: 0, captured: Vec::new(), captured_cap: 1024, rng: 0 }
+        Interp {
+            host,
+            globals,
+            root,
+            depth: 0,
+            max_depth: DEFAULT_MAX_DEPTH,
+            ticks: 0,
+            captured: Vec::new(),
+            captured_cap: 1024,
+            rng: 0,
+            databases: Vec::new(),
+        }
     }
 
     /// Allows evaluations to nest `depth` levels deep instead of [`DEFAULT_MAX_DEPTH`]. Only for
@@ -269,6 +283,17 @@ impl<'h> Interp<'h> {
         self.rng ^= self.rng >> 7;
         self.rng ^= self.rng << 17;
         (self.rng >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Remembers which database a navigation table came from.
+    pub(crate) fn remember_database(&mut self, nav: &Rc<Table>, db: Rc<dyn Database>) {
+        self.databases.retain(|(t, _)| t.strong_count() > 0);
+        self.databases.push((Rc::downgrade(nav), db));
+    }
+
+    /// The database a navigation table came from.
+    pub(crate) fn database_of(&self, nav: &Rc<Table>) -> Option<Rc<dyn Database>> {
+        self.databases.iter().find(|(t, _)| std::ptr::eq(t.as_ptr(), Rc::as_ptr(nav))).map(|(_, db)| db.clone())
     }
 
     /// The library, as the record `#shared`.
