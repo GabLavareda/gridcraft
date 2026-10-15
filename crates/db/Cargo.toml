@@ -1,0 +1,31 @@
+[package]
+name = "gridcraft-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GridCraft database connections for queries: SQL Server, PostgreSQL, MySQL/MariaDB and SQLite"
+
+[lints]
+workspace = true
+
+[features]
+default = ["sqlserver", "postgres", "mysql", "sqlite"]
+sqlserver = ["dep:tiberius", "dep:tokio-util", "dep:tokio", "dep:futures-util"]
+postgres = ["dep:tokio-postgres", "dep:postgres-native-tls", "dep:native-tls", "dep:tokio", "dep:futures-util"]
+mysql = ["dep:mysql_async", "dep:tokio"]
+sqlite = ["dep:rusqlite"]
+
+[dependencies]
+
+# Connections need sockets and threads: none of this is built for the web, where every
+# connection fails with an error instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.53", default-features = false, features = ["rt", "net", "time", "io-util"], optional = true }
+tokio-util = { version = "0.7", default-features = false, features = ["compat"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls"], optional = true }
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"], optional = true }
+postgres-native-tls = { version = "0.5", optional = true }
+native-tls = { version = "0.2", optional = true }
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "native-tls-tls"], optional = true }
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "column_decltype", "hooks"], optional = true }

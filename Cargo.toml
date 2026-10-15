@@ -17,6 +17,7 @@ gridcraft-numfmt = { path = "crates/numfmt" }
 gridcraft-formula = { path = "crates/formula" }
 gridcraft-functions = { path = "crates/functions" }
 gridcraft-mquery = { path = "crates/mquery" }
+gridcraft-db = { path = "crates/db" }
 gridcraft-model = { path = "crates/model" }
 gridcraft-calc = { path = "crates/calc" }
 gridcraft-xlsx = { path = "crates/xlsx" }
