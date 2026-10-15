@@ -1887,11 +1887,10 @@
   },
   {
    "seq": "APND",
-   "kind": "command",
-   "target": "data.fromDatabase",
-   "pending": true,
+   "kind": "dialog",
+   "target": "fromDatabase",
    "excel": "From Database (Microsoft Query)",
-   "note": "gap #12; reserved until the command lands"
+   "note": "Data › From Database: SQL Server, PostgreSQL, MySQL, SQLite"
   },
   {
    "seq": "APNE",

@@ -366,7 +366,7 @@ fn needs(s: &mut Session, _: &Json) -> Result<Json> {
         .collect())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use serde_json::{Value as Json, json};
 

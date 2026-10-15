@@ -1881,7 +1881,7 @@ fn data(app: &mut SheetApp, ui: &mut Ui) {
     ui.vertical(|ui| {
         let __k =
             small_button(ui, Icon::Database, "From Database", "Make a query that reads a SQL Server, PostgreSQL, MySQL or SQLite database", false);
-        control_keytip(app, ui, &__k, "data.fromDatabase");
+        control_keytip(app, ui, &__k, "dialog:fromDatabase");
         if __k.clicked() {
             app.open_dialog("fromDatabase", json!({}));
         }

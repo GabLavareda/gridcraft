@@ -41,3 +41,7 @@ web-sys = { version = "0.3", features = ["Window", "Navigator"] }
 [build-dependencies]
 serde_json = { workspace = true }
 toml = "1"
+
+# Tests make SQLite files for Data › From Database to read.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }

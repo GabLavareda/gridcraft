@@ -2055,10 +2055,7 @@ fn keytip_apn_() {
 fn keytip_apnd_() {
     let mut h = harness(blank());
     sequence(&mut h, "APND", false);
-    assert!(h.state().dialog.is_none(), "APND must not open a dialog");
-    assert!(h.state().message.is_none(), "APND must not open a message box");
-    assert!(h.state().toast.is_none(), "APND must not raise a toast");
-    assert!(h.state().session.journal.is_empty(), "APND must not journal");
+    assert!(h.state().dialog.is_some(), "APND must open the fromDatabase dialog");
 }
 
 #[test]

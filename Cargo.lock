@@ -1925,6 +1925,7 @@ dependencies = [
  "gridcraft-xlsx",
  "image",
  "log",
+ "rusqlite",
  "serde",
  "serde_json",
  "skrifa",
