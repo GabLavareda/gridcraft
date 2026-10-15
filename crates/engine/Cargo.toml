@@ -16,6 +16,7 @@ gridcraft-functions = { workspace = true }
 gridcraft-model = { workspace = true }
 gridcraft-calc = { workspace = true }
 gridcraft-mquery = { workspace = true }
+gridcraft-db = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -28,3 +29,7 @@ image = { workspace = true }
 [dev-dependencies]
 gridcraft-xlsx = { workspace = true, features = ["test-support"] }
 zip = { workspace = true }
+
+# Tests make SQLite files to read (the engine itself only reads them, through gridcraft-db).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }

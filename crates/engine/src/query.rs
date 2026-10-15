@@ -3,8 +3,9 @@
 //!
 //! The M evaluator (`gridcraft-mquery`) does no I/O. [`WorkbookHost`] is what a query can reach:
 //! the tables and named ranges of its own workbook (`Excel.CurrentWorkbook`), local files
-//! (`File.Contents`, off the web build only), workbook files (`Excel.Workbook`) and the clock.
-//! Nothing here opens the network.
+//! (`File.Contents`, off the web build only), workbook files (`Excel.Workbook`), the clock, and
+//! databases the user gave a login for in this session ([`crate::datasource`]). Nothing else
+//! opens the network.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -157,7 +158,7 @@ fn date_value(sys: DateSystem, n: f64) -> mq::Value {
 
 /// Names made unique: a repeat gets a number after it. An Excel table tells its columns apart
 /// without regard to case (`ignore_case`), M with regard to it.
-fn unique_names(names: impl Iterator<Item = String>, ignore_case: bool) -> Vec<String> {
+pub(crate) fn unique_names(names: impl Iterator<Item = String>, ignore_case: bool) -> Vec<String> {
     let key = |s: &str| if ignore_case { s.to_lowercase() } else { s.to_string() };
     let mut taken = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -190,11 +191,12 @@ fn name_range(wb: &Workbook, formula: &str, scope: Option<usize>) -> Option<(usi
 /// What a query of `wb` can reach.
 pub struct WorkbookHost<'a> {
     wb: &'a Workbook,
+    databases: crate::datasource::Connector<'a>,
 }
 
 impl<'a> WorkbookHost<'a> {
-    pub fn new(wb: &'a Workbook) -> WorkbookHost<'a> {
-        WorkbookHost { wb }
+    pub fn new(wb: &'a Workbook, sources: &'a crate::datasource::DataSources) -> WorkbookHost<'a> {
+        WorkbookHost { wb, databases: crate::datasource::Connector::new(sources) }
     }
 }
 
@@ -257,6 +259,10 @@ impl mq::Host for WorkbookHost<'_> {
         Ok(parts)
     }
 
+    fn database(&self, source: &mq::DataSource) -> Result<Rc<dyn mq::Database>, String> {
+        self.databases.database(source)
+    }
+
     /// The clock in UTC: like `NOW()`, since the local offset isn't known without platform calls.
     fn now(&self) -> Option<mq::Now> {
         let ms = gridcraft_core::date::unix_now_ms()?;
@@ -277,8 +283,14 @@ pub enum Target<'a> {
     Step { name: Option<&'a str>, formula: &'a str, step: &'a str },
 }
 
-fn evaluate_in<R>(wb: &Workbook, target: &Target, max_depth: Option<usize>, done: impl FnOnce(&mq::Value) -> Result<R, String>) -> Result<R, String> {
-    let host = WorkbookHost::new(wb);
+fn evaluate_in<R>(
+    wb: &Workbook,
+    sources: &crate::datasource::DataSources,
+    target: &Target,
+    max_depth: Option<usize>,
+    done: impl FnOnce(&mq::Value) -> Result<R, String>,
+) -> Result<R, String> {
+    let host = WorkbookHost::new(wb, sources);
     let mut it = mq::Interp::new(&host);
     if let Some(d) = max_depth {
         it.set_max_depth(d);
@@ -319,7 +331,12 @@ fn evaluate_in<R>(wb: &Workbook, target: &Target, max_depth: Option<usize>, done
 ///
 /// Off the web, the evaluation runs on a thread of its own with a large stack, so that deeply
 /// recursive queries have room; a panic there becomes an error here.
-pub fn evaluate<R: Send>(wb: &Workbook, target: &Target, done: impl FnOnce(&mq::Value) -> Result<R, String> + Send) -> Result<R, String> {
+pub fn evaluate<R: Send>(
+    wb: &Workbook,
+    sources: &crate::datasource::DataSources,
+    target: &Target,
+    done: impl FnOnce(&mq::Value) -> Result<R, String> + Send,
+) -> Result<R, String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         // `Target` holds only shared references, but its lifetime keeps it off the thread:
@@ -335,7 +352,7 @@ pub fn evaluate<R: Send>(wb: &Workbook, target: &Target, done: impl FnOnce(&mq::
                 (1, name, formula, _) => Target::Formula { name, formula },
                 (_, name, formula, step) => Target::Step { name, formula, step },
             };
-            evaluate_in(wb, &target, depth, done)
+            evaluate_in(wb, sources, &target, depth, done)
         };
         let (depth, stack) = EVAL_THREAD;
         let mut done = Some(done);
@@ -358,7 +375,7 @@ pub fn evaluate<R: Send>(wb: &Workbook, target: &Target, done: impl FnOnce(&mq::
     }
     #[cfg(target_arch = "wasm32")]
     {
-        evaluate_in(wb, target, None, done)
+        evaluate_in(wb, sources, target, None, done)
     }
 }
 
@@ -498,13 +515,19 @@ pub fn grid(sys: DateSystem, v: &mq::Value, max_rows: usize) -> Result<Grid, Str
     let mut cells = Vec::with_capacity(kept.saturating_mul(width));
     for row in t.rows.iter().take(kept) {
         for (i, slot) in row.iter().enumerate() {
-            cells.push(match slot {
+            // A table of a database not read yet shows as one, without being read.
+            let slot = match slot {
+                mq::Slot::Lazy(l) if !l.is_forced() => mq::Slot::Val(mq::Value::table(mq::Table::empty())),
+                s => s.forced(),
+            };
+            cells.push(match &slot {
                 mq::Slot::Val(v) => {
                     let (value, shown) = cell_value(sys, v);
                     let percent = matches!(t.types.get(i), Some(mq::Type::Number(mq::Facet::Percentage))) && matches!(value, Value::Number(_));
                     (Scalar::Value(value), if percent { Some(Shown::Percent) } else { shown })
                 }
                 mq::Slot::Err(e) => (Scalar::Error(e.to_string()), None),
+                mq::Slot::Lazy(_) => (Scalar::Value(Value::text("[Table]")), None),
             });
         }
     }

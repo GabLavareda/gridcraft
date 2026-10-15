@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod cf;
 mod clip_html;
 pub mod cmd;
+pub mod datasource;
 pub mod display;
 pub mod fill;
 pub mod io;
@@ -252,6 +253,8 @@ pub struct Session {
     /// Review › Notes › Show All Notes: every note is displayed. An application display setting
     /// (like Excel's comment indicator option), so it's not saved in the file.
     pub show_all_notes: bool,
+    /// Database logins and approved native queries, for this session only.
+    pub data_sources: datasource::DataSources,
 }
 
 impl Session {

@@ -3,6 +3,7 @@
 
 pub mod analysis;
 pub mod data;
+pub mod database;
 pub mod draw;
 pub mod edit;
 pub mod extra;
@@ -137,6 +138,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(inspect::specs());
         v.extend(extra::specs());
         v.extend(query::specs());
+        v.extend(database::specs());
         v.extend(draw::specs());
         v.extend(spelling::specs());
         v.extend(solver::specs());

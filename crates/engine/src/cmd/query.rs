@@ -159,9 +159,9 @@ fn summary(name: &str, l: &query::Loaded) -> Json {
 }
 
 /// Evaluates to a full grid.
-fn run(wb: &Workbook, target: &Target) -> Result<Grid> {
+fn run(s: &Session, wb: &Workbook, target: &Target) -> Result<Grid> {
     let sys = wb.date_system;
-    query::evaluate(wb, target, move |v| query::grid(sys, v, usize::MAX)).map_err(other)
+    query::evaluate(wb, &s.data_sources, target, move |v| query::grid(sys, v, usize::MAX)).map_err(other)
 }
 
 /// Loads `grid` as the result of the query `name`: at `at` on an existing sheet, or on a new
@@ -225,7 +225,7 @@ fn note_new_sheet(s: &mut Session, sheet: usize, created: bool) -> Result<()> {
     Ok(())
 }
 
-fn add(s: &mut Session, p: &Json) -> Result<Json> {
+pub(crate) fn add(s: &mut Session, p: &Json) -> Result<Json> {
     const C: &str = "data.query.add";
     let formula = checked_formula(C, p)?.ok_or_else(|| bad(C, "missing `formula`"))?.to_string();
     let d = s.doc()?;
@@ -249,7 +249,7 @@ fn add(s: &mut Session, p: &Json) -> Result<Json> {
         });
     }
     let (at, new_sheet) = destination(s, C, p, &name)?;
-    let grid = run(&s.doc()?.wb, &Target::Formula { name: Some(&name), formula: &formula })?;
+    let grid = run(s, &s.doc()?.wb, &Target::Formula { name: Some(&name), formula: &formula })?;
     let (sheet, created, table, loaded) = edit(s, |cx| {
         let r = load_new(cx, &name, &grid, at, &new_sheet)?;
         cx.wb.queries.push(Query { name: name.clone(), formula, description, load_to: Some(r.2.clone()) });
@@ -272,7 +272,7 @@ fn load(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(other(format!("The query '{}' is already loaded: refresh it instead.", q.name)));
     }
     let (at, new_sheet) = destination(s, C, p, &q.name)?;
-    let grid = run(&s.doc()?.wb, &Target::Query(&q.name))?;
+    let grid = run(s, &s.doc()?.wb, &Target::Query(&q.name))?;
     let (sheet, created, table, loaded) = edit(s, |cx| {
         let r = load_new(cx, &q.name, &grid, at, &new_sheet)?;
         if let Some(stored) = cx.wb.queries.iter_mut().find(|x| x.name == q.name) {
@@ -300,7 +300,7 @@ fn reload(s: &mut Session, q: &Query, formula: Option<&str>) -> Result<query::Lo
         Some(f) => Target::Formula { name: Some(&q.name), formula: f },
         None => Target::Query(&q.name),
     };
-    let grid = run(&d.wb, &target)?;
+    let grid = run(s, &d.wb, &target)?;
     edit(s, |cx| query::load(cx, sheet, at, &table, &grid).map_err(other))
 }
 
@@ -446,7 +446,12 @@ fn preview(s: &mut Session, p: &Json) -> Result<Json> {
     };
     let rows = u32_param(p, "rows").map_or(PREVIEW_ROWS, |n| (n as usize).clamp(1, MAX_PREVIEW_ROWS));
     let sys = d.wb.date_system;
-    let grid = query::evaluate(&d.wb, &target, move |v| query::grid(sys, v, rows)).map_err(other)?;
+    let grid = query::evaluate(&d.wb, &s.data_sources, &target, move |v| query::grid(sys, v, rows)).map_err(other)?;
+    Ok(grid_json(&grid, sys))
+}
+
+/// A preview grid as JSON: dates, times and percentages as they will show on the sheet.
+pub(crate) fn grid_json(grid: &Grid, sys: gridcraft_core::DateSystem) -> Json {
     let columns: Vec<Json> = grid.columns.iter().zip(&grid.types).map(|(n, t)| json!({"name": n, "type": t})).collect();
     let mut formats: std::collections::HashMap<&'static str, NumberFormat> = std::collections::HashMap::new();
     let mut out_rows = Vec::with_capacity(grid.rows);
@@ -471,7 +476,7 @@ fn preview(s: &mut Session, p: &Json) -> Result<Json> {
         }
         out_rows.push(Json::Array(row));
     }
-    Ok(json!({"kind": grid.kind, "columns": columns, "rows": out_rows, "moreRows": grid.more_rows, "errors": grid.error_count()}))
+    json!({"kind": grid.kind, "columns": columns, "rows": out_rows, "moreRows": grid.more_rows, "errors": grid.error_count()})
 }
 
 fn functions(_: &mut Session, p: &Json) -> Result<Json> {
