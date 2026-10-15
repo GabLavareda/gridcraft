@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-12 · **Change:** minor (queries: Power Query M engine, load and refresh, Data Mashup part) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (queries: databases) · **Target:** Microsoft Excel (Microsoft 365)
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using GridCraft for real work first). This is the work list: pick from the top, check the open
@@ -101,14 +101,15 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   100–165 h including #5. [localization-parity.md](localization-parity.md)
 
 ### 12. Get & Transform, external data, data model (F)
-- **In:** the Power Query M language (`crates/mquery`: evaluator and 420 library functions),
+- **In:** the Power Query M language (`crates/mquery`: evaluator and 426 library functions),
   queries kept in the workbook, loaded to tables and refreshed (`data.query.*`,
   `data.refreshAll`), saved and read as Excel's Data Mashup part. Sources: the workbook's own
-  tables, CSV, JSON, local files, other workbooks. [power-query.md](power-query.md)
+  tables, CSV, JSON, local files, other workbooks, and SQL Server, PostgreSQL, MySQL/MariaDB and
+  SQLite databases with a login kept for the session (`crates/db`). [power-query.md](power-query.md)
 - **In the interface:** the Query Editor (applied steps, formula, preview) and the Queries &
-  Connections pane; From Table/Range, New Query and Refresh All on the Data tab.
+  Connections pane; From Database, From Table/Range, New Query and Refresh All on the Data tab.
 - **Missing:** the editor's transform commands that write steps; Get Data and From Text/CSV
-  making queries; From Web, databases and folders;
+  making queries; From Web, folders, Oracle/ODBC and Windows logins;
   connections and query tables for new queries, so that Excel refreshes them; relationships and
   the data model (`data.fromWeb`, `data.relationships` missing). Not verified in Excel.
   **Estimate:** 40–70 h.
@@ -169,6 +170,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | §12: databases (SQL Server, PostgreSQL, MySQL, SQLite) and Data › From Database |
 | 2026-10-14 | minor | §12: Query Editor and Queries & Connections pane |
 | 2026-10-12 | minor | §12: queries in the Power Query M language run, load to tables and refresh; saved as the Data Mashup part. The editor and more sources remain |
 | 2026-10-12 | minor | Desktop File > Print now discovers printers and submits PDF jobs through pinned craft-print with printer choice, copies, duplex and grayscale; browser printing and PDF export remain available. Remaining print parity includes page ranges and driver-specific tray/options UI; physical printer fidelity needs hardware validation. |

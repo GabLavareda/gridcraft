@@ -1,6 +1,6 @@
 # Queries (Get & Transform)
 
-> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-14 · **Change:** minor (the Query Editor and the Queries & Connections pane) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-15 · **Change:** minor (databases: SQL Server, PostgreSQL, MySQL, SQLite) · **Target:** Microsoft Excel (Microsoft 365)
 
 A query is a named formula in the Power Query M language that produces a table. GridCraft keeps
 queries in the workbook, runs them, and loads their results into tables on sheets. This page says
@@ -12,14 +12,16 @@ what is there, how it behaves and what is not there yet. The gap entry is
 | Part | Where | State |
 |---|---|---|
 | The M language: lexer, parser, evaluator | `crates/mquery` | Complete to the public language specification, except metadata (`meta` keeps the value and drops the metadata) and query folding (everything is evaluated here, eagerly) |
-| The standard library | `crates/mquery/src/stdlib` | 420 functions and 92 constants: `Table.*` (78) and `#table`, `List.*` (67), `Text.*`, `Number.*`, `Date.*`/`Time.*`/`DateTime.*`/`Duration.*`, `Record.*`, `Splitter.*`, `Combiner.*`, `Comparer.*`, `Replacer.*`, `Value.*`, `Type.*`, `Csv.Document`, `Json.Document`, `Excel.CurrentWorkbook`, `Excel.Workbook`, `File.Contents`, text encodings and binary values |
+| The standard library | `crates/mquery/src/stdlib` | 426 functions and 92 constants: `Table.*` (78) and `#table`, `List.*` (67), `Text.*`, `Number.*`, `Date.*`/`Time.*`/`DateTime.*`/`Duration.*`, `Record.*`, `Splitter.*`, `Combiner.*`, `Comparer.*`, `Replacer.*`, `Value.*`, `Type.*`, `Csv.Document`, `Json.Document`, `Excel.CurrentWorkbook`, `Excel.Workbook`, `File.Contents`, `Sql.Database`, `Sql.Databases`, `PostgreSQL.Database`, `MySQL.Database`, `SQLite.Database`, `Value.NativeQuery`, text encodings and binary values |
+| Databases | `crates/db`, `crates/engine/src/datasource.rs`, `crates/engine/src/cmd/database.rs` | SQL Server, PostgreSQL, MySQL/MariaDB and SQLite, with a login per server kept for the session; see [Databases](#databases) |
 | Queries in the model | `Workbook::queries` (`crates/model`) | Name, formula, description, the table it loads to |
-| Commands | `crates/engine/src/cmd/query.rs` | `data.query.add`, `.set`, `.delete`, `.load`, `.refresh`, `.list`, `.preview`, `.parse`, `.functions`; `data.refreshAll` refreshes queries, then PivotTables |
-| Interface | `crates/ui-egui/src/query_editor.rs`, `panes.rs`, `ribbon.rs` | Data tab: From Table/Range, New Query, Refresh All, Queries & Connections. The Query Editor: name, description, applied steps, the formula, a preview of the result or of one step. The Queries & Connections pane: each query with where it loads, Edit, Refresh or Load, Delete |
+| Commands | `crates/engine/src/cmd/query.rs`, `cmd/database.rs` | `data.query.add`, `.set`, `.delete`, `.load`, `.refresh`, `.list`, `.preview`, `.parse`, `.functions`; `data.refreshAll` refreshes queries, then PivotTables; `data.fromDatabase`, `data.database.connect`, `.preview`, `.approve`, `.needs`, `data.credentials.set`, `.clear`, `.list` |
+| Interface | `crates/ui-egui/src/query_editor.rs`, `database_dialog.rs`, `panes.rs`, `ribbon.rs` | Data tab: From Database, From Table/Range, New Query, Refresh All, Queries & Connections. From Database: type, host, port, database, login, password, encryption; the tables to pick from with a preview, or SQL to run. The Query Editor: name, description, applied steps, the formula, a preview of the result or of one step. The Queries & Connections pane: each query with where it loads, Edit, Refresh or Load, Delete |
 | In the file | `crates/xlsx/src/mashup.rs` | Read and written as the Data Mashup custom XML part ([MS-QDEFF]), the part Excel keeps its queries in |
 
-In the interface, Data › From Table/Range opens the Query Editor on a query that reads the table
-at the selection, New Query on an example, and the Queries & Connections pane lists the queries.
+In the interface, Data › From Database makes a query that reads a table of a database or runs
+SQL on it, Data › From Table/Range opens the Query Editor on a query that reads the table at the
+selection, New Query on an example, and the Queries & Connections pane lists the queries.
 The editor writes M: there are no transform commands that add steps yet. Get Data (Text/CSV)
 still imports once, without making a query. Everything the interface does is also a command
 (CLI, MCP, control channel, scripts).
@@ -58,9 +60,53 @@ The evaluator does no I/O. The engine's host (`crates/engine/src/query.rs`) gran
 | `File.Contents` | A local file, by path | no |
 | `Excel.Workbook` | The sheets, tables and names of workbook bytes (XLSX, XLSB, ODS) | yes |
 | `DateTime.LocalNow` and relatives | The system clock, in UTC (like `NOW()`) | yes |
+| `Sql.Database` and the other database functions | A database server the user gave a login for in this session; a SQLite file, read-only | no |
 | `Web.Contents` | Nothing: refused | no |
 
-A query runs only when a command asks for it, so opening a workbook reads no files.
+A query runs only when a command asks for it, so opening a workbook reads no files and
+connects to no database.
+
+## Databases
+
+`Sql.Database(server, database)`, `PostgreSQL.Database`, `MySQL.Database` and `SQLite.Database(path)`
+(GridCraft's own: Power Query reaches SQLite only through ODBC drivers) return a navigation table:
+`Name` (`schema.table`), `Data`, `Schema`, `Item`, `Kind` (`Table` or `View`). A table's rows are
+fetched only when its `Data` is read, so `Source{[Schema="dbo",Item="Orders"]}[Data]` reads that
+table and nothing else. `[HierarchicalNavigation=true]` nests the tables under their schemas;
+`Sql.Databases(server)` lists the databases of a server. SQL runs through the `Query` option or
+`Value.NativeQuery(database, sql)`; parameters of native queries aren't supported yet. Servers are
+written as Power Query writes them: `host,port` for SQL Server (`host:port` too), `host:port` for
+the others.
+
+- **Logins.** A query names the server and the database, never the login. The user gives a login
+  (user name and password) per server in Data › From Database, or with `data.credentials.set`; it
+  is kept by the session only: never written to the workbook, the journal or any file, and never
+  shown in a command result. A workbook from elsewhere reaches only servers the user gave a login
+  for. When a refresh or a preview finds no login (or the server refuses it), the interface asks
+  for one and runs the command again; `data.database.needs` tells scripts what was missing.
+- **Native queries.** SQL can change a database, so SQL written in a query runs only once the
+  user approved that exact text for that database (`data.database.approve`; the interface asks,
+  as Excel does). SQL typed in From Database is approved by the call that makes the query.
+  Reading tables through the navigation table needs no approval. SQLite files are opened
+  read-only: no query changes one, and a missing file isn't created.
+- **Encryption.** Connections are encrypted (TLS) unless turned off; the server's certificate is
+  checked unless the user chooses to trust it (servers with a certificate of their own). With
+  encryption off, SQL Server still encrypts the login, as its own clients do.
+- **Types.** Integers load as `Int64.Type`, `decimal`/`numeric` as `Decimal.Type`, `money` as
+  `Currency.Type`, floating point as numbers, dates, times, date-times, date-times with offset and
+  intervals as M's own types, binary columns as binary values. Text that a type can't read (a
+  PostgreSQL array, an `infinity` date) stays text. MySQL `TINYINT(1)` reads as logical and `TIME`
+  as a duration; SQLite columns go by their declared type, ISO text in a `DATE` column reading as a
+  date.
+- **Limits.** Reads stop with an error past the evaluator's caps (rows, cells, bytes); a statement
+  may run ten minutes, a connection attempt fifteen seconds. Off the web only: the web build
+  refuses every database.
+
+Tested against SQL Server 2022, PostgreSQL 17 and MySQL 8.4 in containers (2026-10-15):
+`crates/db/src/tests.rs` and `crates/engine/src/cmd/database.rs` read seeded servers when
+`GRIDCRAFT_TEST_SQLSERVER`, `GRIDCRAFT_TEST_POSTGRESQL` and `GRIDCRAFT_TEST_MYSQL` name them
+(`host=…;port=…;user=…;password=…;database=…`, plus `encrypt=0` or `trust=1`), seeded with
+`crates/db/tests/seed/*.sql`; without them those tests pass untested. SQLite is always tested.
 
 ## Never crash
 
@@ -115,7 +161,10 @@ ordinary tables and the queries show as connection only, since no connection is 
 - Get Data and From Text/CSV making queries instead of importing once.
 - A preview or refresh runs on the interface's thread: a slow query holds the window until it
   ends.
-- `Web.Contents`, databases, folders (`Folder.Files`), XML and HTML tables, PDF, Parquet.
+- `Web.Contents`, folders (`Folder.Files`), XML and HTML tables, PDF, Parquet; Oracle, ODBC and
+  other databases; Windows (integrated) logins and SQL Server named instances (give the port);
+  parameters of native queries; keeping logins from one session to the next.
+- On macOS the system TLS library may refuse SQL Server's encryption; not tried.
 - Connections and query tables for new queries, so that Excel refreshes them itself.
 - Relationships and the data model.
 - Background refresh, refresh on open, privacy levels.
@@ -129,5 +178,6 @@ ordinary tables and the queries show as connection only, since no connection is 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | Databases: `Sql.Database`, `Sql.Databases`, `PostgreSQL.Database`, `MySQL.Database`, `SQLite.Database`, `Value.NativeQuery` with navigation tables read when opened; logins per server for the session; native query approval; Data › From Database |
 | 2026-10-14 | minor | The Query Editor (steps, formula, preview), the Queries & Connections pane, and From Table/Range, New Query, Refresh All on the Data tab; `data.query.parse` |
 | 2026-10-12 | major | Created: M language engine (`crates/mquery`), query commands, load and refresh to tables, Data Mashup part read and written |
