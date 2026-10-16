@@ -707,7 +707,7 @@ mod tests {
             totals_row: false,
             columns: ["Region", "Total"]
                 .iter()
-                .map(|n| TableColumn { name: (*n).into(), totals: TotalsFn::None, totals_label: None, formula: None })
+                .map(|n| TableColumn { name: (*n).into(), totals: TotalsFn::None, totals_label: None, formula: None, unique_name: None, xml: None })
                 .collect(),
             style: "TableStyleMedium2".into(),
             banded_rows: true,
@@ -716,6 +716,8 @@ mod tests {
             last_col: false,
             filter_button: true,
             filter: vec![],
+            table_type: None,
+            connection_id: None,
         });
         wb.queries = vec![
             query("Sales", "#table({\"Region\", \"Total\"}, {{\"North\", 3}})", "by region", Some("Sales")),

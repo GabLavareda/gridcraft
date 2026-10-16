@@ -709,7 +709,7 @@ pub fn load(cx: &mut Ctx, sheet: usize, at: CellRef, table: &str, grid: &Grid) -
             .iter()
             .map(|n| match previous.iter().find(|p| p.name.eq_ignore_ascii_case(n)) {
                 Some(p) => TableColumn { name: n.clone(), ..p.clone() },
-                None => TableColumn { name: n.clone(), totals: TotalsFn::None, totals_label: None, formula: None },
+                None => TableColumn { name: n.clone(), totals: TotalsFn::None, totals_label: None, formula: None, unique_name: None, xml: None },
             })
             .collect()
     };
@@ -737,6 +737,8 @@ pub fn load(cx: &mut Ctx, sheet: usize, at: CellRef, table: &str, grid: &Grid) -
                 last_col: false,
                 filter_button: true,
                 filter: vec![],
+                table_type: None,
+                connection_id: None,
             });
         }
     }

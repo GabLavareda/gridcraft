@@ -1757,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "arboard",
  "craft-print",
@@ -1769,6 +1769,8 @@ dependencies = [
  "image",
  "log",
  "muda",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
  "pollster 1.0.1",
  "rfd",
  "serde_json",
@@ -1777,7 +1779,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-calc"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-core",
  "gridcraft-formula",
@@ -1789,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-chart"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-calc",
  "gridcraft-core",
@@ -1800,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-cli"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-engine",
  "gridcraft-mcp",
@@ -1812,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-core"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "js-sys",
  "serde",
@@ -1822,7 +1824,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-db"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "futures-util",
  "mysql_async",
@@ -1837,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-engine"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-calc",
  "gridcraft-chart",
@@ -1861,7 +1863,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-formula"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-core",
  "serde",
@@ -1870,7 +1872,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-functions"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-core",
  "regex",
@@ -1878,7 +1880,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-mcp"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-engine",
  "log",
@@ -1887,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-model"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-core",
  "gridcraft-formula",
@@ -1899,22 +1901,22 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-mquery"
-version = "0.6.1"
+version = "0.7.0"
 
 [[package]]
 name = "gridcraft-numfmt"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-core",
 ]
 
 [[package]]
 name = "gridcraft-pdf"
-version = "0.6.1"
+version = "0.7.0"
 
 [[package]]
 name = "gridcraft-ui-egui"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "craft-ui",
  "egui",
@@ -1937,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-web"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "eframe",
  "egui",
@@ -1954,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-xlsx"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "aes",
  "gridcraft-core",
@@ -5547,7 +5549,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gridcraft-engine",
  "serde_json",

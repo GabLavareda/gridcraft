@@ -249,7 +249,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut bool) {
                 }
             });
             if let Some(e) = parsed["error"].as_str() {
-                let at = format!("{} {}, {} {}: {e}", tr(ui, "Line"), parsed["line"], tr(ui, "column"), parsed["column"]);
+                let at = format!("{} {}, {} {}: {e}", tr(ui, "At line"), parsed["line"], tr(ui, "column"), parsed["column"]);
                 ui.label(RichText::new(at).color(Color32::from_rgb(0xC4, 0x2B, 0x1C)));
             }
         });

@@ -14,6 +14,7 @@ pub mod datasource;
 pub mod display;
 pub mod fill;
 pub mod io;
+pub mod links;
 pub mod outline;
 pub mod paper;
 pub mod pivot;
@@ -110,6 +111,9 @@ pub struct DocState {
     pub sheet_selections: Vec<Selection>,
     /// Allow Edit Ranges unlocked with their password in this session: (sheet name, title).
     pub unlocked_ranges: Vec<(String, String)>,
+    /// The format `path`'s content was recognised as when its extension doesn't name one (an
+    /// XLSX called `budget.dat`): Save writes it back in that format.
+    pub content_kind: Option<io::FileKind>,
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -134,6 +138,7 @@ impl DocState {
             title,
             sheet_selections: vec![],
             unlocked_ranges: vec![],
+            content_kind: None,
         }
     }
     pub fn is_dirty(&self) -> bool {
