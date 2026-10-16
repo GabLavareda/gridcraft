@@ -185,6 +185,7 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Choose Preview to run the query." => "Escolha Visualizar para executar a consulta.",
         // From Database
         "From Database" => "Do Banco de Dados",
+        "Query Editor" => "Editor de Consultas",
         "Make a query that reads a SQL Server, PostgreSQL, MySQL or SQLite database" => {
             "Criar uma consulta que lê um banco de dados SQL Server, PostgreSQL, MySQL ou SQLite"
         }
