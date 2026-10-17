@@ -2,10 +2,12 @@
 //! approved, and the connections behind `Sql.Database`, `PostgreSQL.Database`, `MySQL.Database`
 //! and `SQLite.Database`.
 //!
-//! Logins are kept by the session only. They are never written to the workbook, the journal
-//! (their `password` param is secret, [`crate::cmd::is_secret_param`]) or any file, and they
-//! never show in command results. A query names a server and a database, never a login: a
-//! workbook from elsewhere reaches only servers the user gave a login for in this session.
+//! Logins are kept by the session. They are never written to the workbook, the journal (their
+//! `password` param is secret, [`crate::cmd::is_secret_param`]) or any file of GridCraft's, and
+//! they never show in command results. A login the user asks to remember goes to the
+//! application's [`LoginStore`] (the system's credential store on the desktop) and comes back in
+//! the next session. A query names a server and a database, never a login: a workbook from
+//! elsewhere reaches only servers the user gave a login for.
 //!
 //! SQL written into a query (`[Query = "…"]`, `Value.NativeQuery`) can change a database, so it
 //! runs only once the user approved that exact text for that database, as Excel asks. Reading
@@ -72,6 +74,18 @@ pub enum Need {
     Approval { kind: Kind, server: String, database: String, query: String },
 }
 
+/// Where remembered logins live between sessions: the system's credential store, which the
+/// application provides (Windows Credential Manager, the macOS keychain). The engine keeps
+/// nothing on disk itself.
+pub trait LoginStore: Send + Sync {
+    /// Every login kept.
+    fn load(&self) -> Result<Vec<Credential>, String>;
+    /// Keeps `c`, replacing the login kept for the same server.
+    fn save(&self, c: &Credential) -> Result<(), String>;
+    /// Forgets the login kept for this server.
+    fn remove(&self, kind: Kind, host: &str, port: Option<u16>) -> Result<(), String>;
+}
+
 /// The logins and approvals of a session.
 #[derive(Default)]
 pub struct DataSources {
@@ -79,6 +93,14 @@ pub struct DataSources {
     approved: HashSet<String>,
     /// What evaluations were refused for since it was last taken.
     needs: Mutex<Vec<Need>>,
+    store: Option<Box<dyn LoginStore>>,
+    /// The servers whose login the store keeps (`kind:host:port`).
+    remembered: HashSet<String>,
+}
+
+/// The key a remembered login goes by: kind, host (lower case) and port.
+pub fn login_key(kind: Kind, host: &str, port: Option<u16>) -> String {
+    format!("{}:{}:{}", kind.id(), host.trim().to_lowercase(), port.or(kind.default_port()).unwrap_or(0))
 }
 
 /// The key of an approval: the database (server normalized) and the SQL.
@@ -91,20 +113,77 @@ fn approval_key(kind: Kind, server: &str, database: &str, sql: &str) -> String {
 }
 
 impl DataSources {
-    /// Keeps a login, replacing the one for the same server.
+    /// Gives the session a place to remember logins in, and takes the logins it keeps (a login
+    /// given in this session already wins). Fails only when the store can't be read.
+    pub fn set_store(&mut self, store: Box<dyn LoginStore>) -> Result<usize, String> {
+        let kept = store.load();
+        self.store = Some(store);
+        let kept = kept?;
+        let n = kept.len();
+        for c in kept {
+            self.remembered.insert(login_key(c.kind, &c.host, c.port));
+            if self.find(c.kind, &c.host, c.port).is_none() {
+                self.credentials.push(c);
+            }
+        }
+        Ok(n)
+    }
+
+    /// Whether logins can be remembered from one session to the next.
+    pub fn can_remember(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// Whether the login for this server is remembered.
+    pub fn is_remembered(&self, kind: Kind, host: &str, port: Option<u16>) -> bool {
+        self.remembered.contains(&login_key(kind, host, port))
+    }
+
+    /// Keeps a login for this session, replacing the one for the same server. Given again
+    /// without being remembered, a login that was remembered is forgotten by the store too, so
+    /// an old password doesn't come back next time.
     pub fn set(&mut self, c: Credential) {
+        let key = login_key(c.kind, &c.host, c.port);
+        if self.remembered.remove(&key)
+            && let Some(store) = &self.store
+        {
+            let _ = store.remove(c.kind, &c.host, c.port);
+        }
         self.credentials.retain(|x| !x.matches(c.kind, &c.host, c.port));
         self.credentials.push(c);
     }
 
-    /// Forgets the logins of one kind, of one server of it, or all; returns how many.
+    /// Keeps a login for this session and in the store, for the next ones.
+    pub fn remember(&mut self, c: Credential) -> Result<(), String> {
+        let Some(store) = &self.store else { return Err("This version of GridCraft can't remember logins.".into()) };
+        store.save(&c)?;
+        let key = login_key(c.kind, &c.host, c.port);
+        self.credentials.retain(|x| !x.matches(c.kind, &c.host, c.port));
+        self.credentials.push(c);
+        self.remembered.insert(key);
+        Ok(())
+    }
+
+    /// Forgets the logins of one kind, of one server of it, or all, remembered ones included;
+    /// returns how many.
     pub fn remove(&mut self, kind: Option<Kind>, server: Option<(&str, Option<u16>)>) -> usize {
         let before = self.credentials.len();
+        let mut gone = Vec::new();
         self.credentials.retain(|c| {
             let same_kind = kind.is_none_or(|k| c.kind == k);
             let same_server = server.is_none_or(|(host, port)| c.matches(c.kind, host, port));
+            if same_kind && same_server {
+                gone.push((c.kind, c.host.clone(), c.port));
+            }
             !(same_kind && same_server)
         });
+        for (k, host, port) in gone {
+            if self.remembered.remove(&login_key(k, &host, port))
+                && let Some(store) = &self.store
+            {
+                let _ = store.remove(k, &host, port);
+            }
+        }
         before - self.credentials.len()
     }
 
@@ -368,6 +447,50 @@ mod tests {
         assert_eq!(s.remove(Some(Kind::SqlServer), Some(("db.example", None))), 1);
         assert_eq!(s.remove(None, None), 1);
         assert!(s.credentials().is_empty());
+    }
+
+    /// A login store in memory that counts what it is asked.
+    #[derive(Default, Clone)]
+    struct MemoryStore(std::sync::Arc<Mutex<Vec<Credential>>>);
+
+    impl LoginStore for MemoryStore {
+        fn load(&self) -> Result<Vec<Credential>, String> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn save(&self, c: &Credential) -> Result<(), String> {
+            let mut all = self.0.lock().unwrap();
+            all.retain(|x| !x.matches(c.kind, &c.host, c.port));
+            all.push(c.clone());
+            Ok(())
+        }
+        fn remove(&self, kind: Kind, host: &str, port: Option<u16>) -> Result<(), String> {
+            self.0.lock().unwrap().retain(|x| !x.matches(kind, host, port));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn remembered_logins_come_back_in_the_next_session() {
+        let store = MemoryStore::default();
+        let mut first = DataSources::default();
+        assert!(!first.can_remember());
+        assert!(first.remember(login(Kind::SqlServer, "db", None, "a")).is_err());
+        first.set_store(Box::new(store.clone())).unwrap();
+        first.remember(login(Kind::SqlServer, "db", None, "a")).unwrap();
+        first.set(login(Kind::PostgreSql, "pg", None, "b"));
+        // The next session has the remembered login, not the other.
+        let mut next = DataSources::default();
+        assert_eq!(next.set_store(Box::new(store.clone())), Ok(1));
+        assert_eq!(next.find(Kind::SqlServer, "DB", Some(1433)).map(|c| c.username.as_str()), Some("a"));
+        assert!(next.is_remembered(Kind::SqlServer, "db", None));
+        assert!(next.find(Kind::PostgreSql, "pg", None).is_none());
+        // Given again without remembering, it is forgotten for good.
+        next.set(login(Kind::SqlServer, "db", None, "c"));
+        assert!(store.0.lock().unwrap().is_empty());
+        // Forgetting removes it from the store too.
+        next.remember(login(Kind::SqlServer, "db", None, "d")).unwrap();
+        assert_eq!(next.remove(Some(Kind::SqlServer), None), 1);
+        assert!(store.0.lock().unwrap().is_empty() && !next.is_remembered(Kind::SqlServer, "db", None));
     }
 
     #[test]

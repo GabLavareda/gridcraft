@@ -24,7 +24,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "From Database",
             ["Data", "Get & Transform Data"],
             None,
-            "{kind, server | host + port?, database, username?, password?, encrypt?, trustServerCertificate?, schema? + table | query (SQL, approved by this call), name?, description?, load?: true, at?, sheet?} → a query that reads the table or runs the SQL, loaded like data.query.add: {name, formula, table?, sheet?, range?, rows?, cols?, errors?}",
+            "{kind, server | host + port?, database, username?, password?, encrypt?, trustServerCertificate?, remember?: false, schema? + table | query (SQL, approved by this call), name?, description?, load?: true, at?, sheet?} → a query that reads the table or runs the SQL, loaded like data.query.add: {name, formula, table?, sheet?, range?, rows?, cols?, errors?}",
             has_doc,
             from_database
         ),
@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Connect",
             [],
             None,
-            "{kind, server | host + port?, database?, username?, password?, encrypt?, trustServerCertificate?} → {kind, server, database, tables: [{schema, name, view}], databases?: [...] (without a database)}; a login the server accepts is kept for the session",
+            "{kind, server | host + port?, database?, username?, password?, encrypt?, trustServerCertificate?, remember?: false} → {kind, server, database, tables: [{schema, name, view}], databases?: [...] (without a database)}; a login the server accepts is kept for the session (and remembered for the next ones with remember)",
             always,
             connect
         ),
@@ -51,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Data Source Settings",
             [],
             None,
-            "{kind, server | host + port?, username, password, encrypt?: true, trustServerCertificate?: false} keeps a login for queries of this session → {kind, server, username}",
+            "{kind, server | host + port?, username, password, encrypt?: true, trustServerCertificate?: false, remember?: false (also in the system's credential store, for the next sessions)} keeps a login for queries → {kind, server, username, remembered}",
             always,
             credentials_set
         ),
@@ -60,7 +60,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear Permissions",
             [],
             None,
-            "{kind?, server? | host + port?} forgets the logins of a server, of a kind, or all → {removed}",
+            "{kind?, server? | host + port?} forgets the logins of a server, of a kind, or all, remembered ones included → {removed}",
             always,
             credentials_clear
         ),
@@ -69,7 +69,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Data Source Settings",
             [],
             None,
-            "{} → [{kind, server, username, encrypt, trustServerCertificate}] (never passwords)",
+            "{} → [{kind, server, username, encrypt, trustServerCertificate, remembered}] (never passwords); canRemember tells whether logins can be remembered in this version: {logins, canRemember}",
             always,
             credentials_list
         ),
@@ -173,9 +173,19 @@ fn open(s: &mut Session, cmd: &str, p: &Json) -> Result<(Kind, String, String, d
         _ => other(e.message),
     })?;
     if let Some(c) = given {
-        s.data_sources.set(c);
+        keep(s, cmd, p, c)?;
     }
     Ok((kind, server, database, conn))
+}
+
+/// Keeps a login for the session, and in the store too when the call asks to remember it.
+fn keep(s: &mut Session, cmd: &str, p: &Json, c: Credential) -> Result<()> {
+    if bool_param(p, "remember").unwrap_or(false) {
+        s.data_sources.remember(c).map_err(|e| bad(cmd, e))
+    } else {
+        s.data_sources.set(c);
+        Ok(())
+    }
 }
 
 fn connect(s: &mut Session, p: &Json) -> Result<Json> {
@@ -277,7 +287,7 @@ fn from_database(s: &mut Session, p: &Json) -> Result<Json> {
         None => kind.default_schema().to_string(),
     };
     if let Some(c) = login(C, p, kind, &server)? {
-        s.data_sources.set(c);
+        keep(s, C, p, c)?;
     }
     if let Some(q) = &sql {
         // The user wrote this SQL here: it may run.
@@ -309,8 +319,9 @@ fn credentials_set(s: &mut Session, p: &Json) -> Result<Json> {
         return Err(bad(C, "missing `username`"));
     }
     let c = login(C, p, kind, &server)?.ok_or_else(|| bad(C, "missing `username`"))?;
-    let out = json!({"kind": kind.id(), "server": c.server(), "username": c.username});
-    s.data_sources.set(c);
+    let mut out = json!({"kind": kind.id(), "server": c.server(), "username": c.username});
+    keep(s, C, p, c)?;
+    out["remembered"] = json!(bool_param(p, "remember").unwrap_or(false));
     Ok(out)
 }
 
@@ -333,13 +344,16 @@ fn credentials_clear(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 fn credentials_list(s: &mut Session, _: &Json) -> Result<Json> {
-    Ok(s.data_sources
+    let d = &s.data_sources;
+    let logins: Vec<Json> = d
         .credentials()
         .iter()
         .map(|c| {
-            json!({"kind": c.kind.id(), "server": c.server(), "username": c.username, "encrypt": c.encrypt, "trustServerCertificate": c.trust_server_certificate})
+            json!({"kind": c.kind.id(), "server": c.server(), "username": c.username, "encrypt": c.encrypt,
+                "trustServerCertificate": c.trust_server_certificate, "remembered": d.is_remembered(c.kind, &c.host, c.port)})
         })
-        .collect())
+        .collect();
+    Ok(json!({"logins": logins, "canRemember": d.can_remember()}))
 }
 
 fn approve(s: &mut Session, p: &Json) -> Result<Json> {
@@ -484,11 +498,17 @@ mod tests {
     fn logins_stay_in_the_session() {
         let mut s = session();
         let set = json!({"kind": "postgresql", "host": "db.example", "port": 5433, "username": "ana", "password": "s3cret-pw", "encrypt": false});
-        assert_eq!(s.execute("data.credentials.set", set).unwrap(), json!({"kind": "postgresql", "server": "db.example:5433", "username": "ana"}));
+        assert_eq!(
+            s.execute("data.credentials.set", set).unwrap(),
+            json!({"kind": "postgresql", "server": "db.example:5433", "username": "ana", "remembered": false})
+        );
         let list = s.execute("data.credentials.list", json!({})).unwrap();
         assert_eq!(
             list,
-            json!([{"kind": "postgresql", "server": "db.example:5433", "username": "ana", "encrypt": false, "trustServerCertificate": false}])
+            json!({"logins": [{"kind": "postgresql", "server": "db.example:5433", "username": "ana", "encrypt": false, "trustServerCertificate": false, "remembered": false}], "canRemember": false})
+        );
+        assert!(
+            s.execute("data.credentials.set", json!({"kind": "mysql", "host": "m", "username": "u", "password": "p", "remember": true})).is_err()
         );
         // A query names the server, not the login; without a login there is nothing to connect with.
         let e =
@@ -506,7 +526,7 @@ mod tests {
         assert!(!journal.contains("s3cret"), "{journal}");
         assert_eq!(s.execute("data.credentials.clear", json!({"kind": "postgresql", "server": "db.example:5433"})).unwrap(), json!({"removed": 1}));
         assert_eq!(s.execute("data.credentials.clear", json!({})).unwrap(), json!({"removed": 1}));
-        assert_eq!(s.execute("data.credentials.list", json!({})).unwrap(), json!([]));
+        assert_eq!(s.execute("data.credentials.list", json!({})).unwrap(), json!({"logins": [], "canRemember": false}));
     }
 
     #[test]

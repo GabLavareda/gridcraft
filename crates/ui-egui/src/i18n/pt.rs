@@ -198,6 +198,13 @@ pub(super) fn translate(text: &str) -> Option<&'static str> {
         "Accept a certificate the server signed itself" => "Aceitar um certificado que o próprio servidor assinou",
         "Connect" => "Conectar",
         "The login is kept for this session only, never in the workbook." => "O login fica guardado só nesta sessão, nunca na pasta de trabalho.",
+        "Remember the login on this computer" => "Lembrar o login neste computador",
+        "Keeps the login in this computer's credential store, for the next times GridCraft opens" => {
+            "Guarda o login no cofre de credenciais deste computador, para as próximas vezes que o GridCraft abrir"
+        }
+        "Without Remember, the login lasts this session only. It never goes into the workbook." => {
+            "Sem Lembrar, o login vale só nesta sessão. Ele nunca vai para a pasta de trabalho."
+        }
         "This query needs a login for its database." => "Esta consulta precisa de um login para o banco de dados dela.",
         "Tables" => "Tabelas",
         "view" => "exibição",

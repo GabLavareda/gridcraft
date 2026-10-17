@@ -14,6 +14,8 @@ mod control_server;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
+mod logins;
 #[cfg(target_os = "macos")]
 mod native_menu;
 mod print;
@@ -296,6 +298,11 @@ fn main() -> eframe::Result<()> {
         }
     }
     let mut session = Session::new();
+    // Database logins the user chose to remember come from the system's credential store.
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
+    if let Err(e) = session.data_sources.set_store(Box::new(logins::KeyringStore)) {
+        log::warn!("remembered logins: {e}");
+    }
     if let Some(s) = &sample
         && let Err(e) = session.execute("file.new", json!({"sample": s}))
     {

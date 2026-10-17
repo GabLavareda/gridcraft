@@ -67,18 +67,28 @@ pub fn defaults(app: &mut SheetApp, params: &Json) -> Json {
         v["mode"] = json!("credentials");
         v["retry"] = params.get("retry").cloned().unwrap_or(Json::Null);
     }
-    // The login kept for the server, if any, minus its password.
+    refresh_login(app, &mut v);
+    v
+}
+
+/// The login kept for the dialog's server, if any, minus its password; and whether logins can be
+/// remembered at all.
+fn refresh_login(app: &mut SheetApp, v: &mut Json) {
+    let kind = v.as_object().map_or(Kind::SqlServer, kind_of);
     let server = server_of(v.as_object().map_or(&Map::new(), |m| m));
-    if let Ok(Json::Array(list)) = app.session.run("data.credentials.list", json!({})) {
-        for c in list {
+    v["stored"] = json!(false);
+    if let Ok(list) = app.session.run("data.credentials.list", json!({})) {
+        v["canRemember"] = list["canRemember"].clone();
+        for c in list["logins"].as_array().into_iter().flatten() {
             if c["kind"] == json!(kind.id()) && c["server"].as_str().is_some_and(|s| s.eq_ignore_ascii_case(&server)) {
                 v["username"] = c["username"].clone();
                 v["encrypt"] = c["encrypt"].clone();
                 v["trust"] = c["trustServerCertificate"].clone();
+                v["remember"] = c["remembered"].clone();
+                v["stored"] = json!(true);
             }
         }
     }
-    v
 }
 
 /// The server as the engine and the query write it.
@@ -99,11 +109,14 @@ fn source_params(v: &Map<String, Json>, with_login: bool) -> Json {
     }
     let mut p = json!({"kind": kind.id(), "host": text(v, "host").trim(), "port": text(v, "port").trim(), "database": text(v, "database").trim()});
     let (user, password) = (text(v, "username"), text(v, "password"));
-    if with_login && (!user.trim().is_empty() || !password.is_empty()) {
+    // An empty password with a login kept for the server means: use the kept one.
+    let typed = !password.is_empty() || (!user.trim().is_empty() && !flag(v, "stored", false));
+    if with_login && typed {
         p["username"] = json!(user.trim());
         p["password"] = json!(password);
         p["encrypt"] = json!(flag(v, "encrypt", true));
         p["trustServerCertificate"] = json!(flag(v, "trust", false));
+        p["remember"] = json!(flag(v, "remember", false));
     }
     p
 }
@@ -288,6 +301,15 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut bool) {
                 });
             });
             ui.end_row();
+            if flag(&d.values, "canRemember", false) {
+                ui.label("");
+                let mut remember = flag(&d.values, "remember", false);
+                let hint = tr(ui, "Keeps the login in this computer's credential store, for the next times GridCraft opens");
+                if ui.checkbox(&mut remember, tr(ui, "Remember the login on this computer")).on_hover_text(hint).changed() {
+                    d.values.insert("remember".into(), json!(remember));
+                }
+                ui.end_row();
+            }
         }
     });
     ui.add_space(4.0);
@@ -304,7 +326,12 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut bool) {
             }
         }
         if !credentials_only && kind != Kind::Sqlite {
-            ui.label(RichText::new(tr(ui, "The login is kept for this session only, never in the workbook.")).small().color(Color32::GRAY));
+            let note = if flag(&d.values, "canRemember", false) {
+                "Without Remember, the login lasts this session only. It never goes into the workbook."
+            } else {
+                "The login is kept for this session only, never in the workbook."
+            };
+            ui.label(RichText::new(tr(ui, note)).small().color(Color32::GRAY));
         }
     });
     if let Some(e) = d.values.get("error").and_then(Json::as_str) {

@@ -82,8 +82,12 @@ the others.
 
 - **Logins.** A query names the server and the database, never the login. The user gives a login
   (user name and password) per server in Data › From Database, or with `data.credentials.set`; it
-  is kept by the session only: never written to the workbook, the journal or any file, and never
-  shown in a command result. A workbook from elsewhere reaches only servers the user gave a login
+  is kept by the session: never written to the workbook, the journal or any file of GridCraft's,
+  and never shown in a command result. With **Remember** (`remember: true`) the desktop app keeps it
+  in the system's credential store (Windows Credential Manager, the macOS keychain, the Secret
+  Service on Linux and the BSDs: GNOME Keyring, KWallet) and the next session starts with it;
+  `data.credentials.clear` forgets it there too. Without a store (the web, the CLI, Linux without a
+  Secret Service) logins last the session. A workbook from elsewhere reaches only servers the user gave a login
   for. When a refresh or a preview finds no login (or the server refuses it), the interface asks
   for one and runs the command again; `data.database.needs` tells scripts what was missing.
 - **Native queries.** SQL can change a database, so SQL written in a query runs only once the
@@ -180,6 +184,7 @@ ordinary tables and the queries show as connection only, since no connection is 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Logins can be remembered in the system's credential store (Windows, macOS, Linux/BSD Secret Service) |
 | 2026-10-16 | minor | Refresh keeps calculated columns the user added; `Table.Pivot` gives its rows in the order of the other columns' values and `Table.PromoteHeaders` numbers repeats with one counter, both as observed in Excel by the author of storytold/gridcraft#1532; compared with #1203, #1532 and #1430 on one workbook |
 | 2026-10-15 | minor | Databases: `Sql.Database`, `Sql.Databases`, `PostgreSQL.Database`, `MySQL.Database`, `SQLite.Database`, `Value.NativeQuery` with navigation tables read when opened; logins per server for the session; native query approval; Data › From Database |
 | 2026-10-14 | minor | The Query Editor (steps, formula, preview), the Queries & Connections pane, and From Table/Range, New Query, Refresh All on the Data tab; `data.query.parse` |
