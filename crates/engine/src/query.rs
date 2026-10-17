@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use gridcraft_core::date::days_from_civil;
 use gridcraft_core::{CellRef, DateSystem, MAX_COLS, MAX_ROWS, RangeRef, Value};
-use gridcraft_model::{Cell, NumFmt, Sheet, StyleId, Table, TableColumn, TotalsFn, Workbook};
+use gridcraft_model::{Cell, Formula, NumFmt, Sheet, StyleId, Table, TableColumn, TotalsFn, Workbook};
 use gridcraft_mquery as mq;
 use gridcraft_numfmt::NumberFormat;
 
@@ -596,19 +596,22 @@ pub fn load(cx: &mut Ctx, sheet: usize, at: CellRef, table: &str, grid: &Grid) -
     if width == 0 {
         return Err("The query result has no columns to load.".into());
     }
+    let headers = unique_names(grid.columns.iter().cloned(), true);
     let existing = cx.wb.sheet(sheet).and_then(|sh| sh.tables.iter().position(|t| t.name.eq_ignore_ascii_case(table)));
-    let (old, totals) = match existing.and_then(|i| cx.wb.sheet(sheet).and_then(|sh| sh.tables.get(i))) {
-        Some(t) => (Some(t.range), t.totals_row),
-        None => (None, false),
+    let (old, totals, added) = match existing.and_then(|i| cx.wb.sheet(sheet).and_then(|sh| sh.tables.get(i).map(|t| (sh, t)))) {
+        Some((sh, t)) => (Some(t.range), t.totals_row, added_columns(sh, t, &headers)),
+        None => (None, false, Vec::new()),
     };
+    // The query's columns, then the ones the user added.
+    let all_width = width + added.len();
     let height = grid.rows as u64 + 1 + totals as u64;
     if at.row as u64 + height > MAX_ROWS as u64 {
         return Err(format!("The query result has {} rows, more than fit on the sheet from row {}.", grid.rows, at.row + 1));
     }
-    if at.col as u64 + width as u64 > MAX_COLS as u64 {
+    if at.col as u64 + all_width as u64 > MAX_COLS as u64 {
         return Err(format!("The query result has {width} columns, more than fit on the sheet."));
     }
-    let new = RangeRef::new(at, CellRef::new(at.row + height as u32 - 1, at.col + width as u32 - 1));
+    let new = RangeRef::new(at, CellRef::new(at.row + height as u32 - 1, at.col + all_width as u32 - 1));
     {
         let sh = cx.wb.sheet(sheet).ok_or("no such sheet")?;
         if sh.is_protected() {
@@ -632,7 +635,6 @@ pub fn load(cx: &mut Ctx, sheet: usize, at: CellRef, table: &str, grid: &Grid) -
         }
     }
     // Each cell's value and, where it needs a number format, the style it has now and the format.
-    let headers = unique_names(grid.columns.iter().cloned(), true);
     let mut errors = 0;
     let mut writes: Vec<(CellRef, Value, Option<(StyleId, Shown)>)> = Vec::with_capacity(grid.cells.len());
     let mut styled: HashMap<(StyleId, Shown), StyleId> = HashMap::new();
@@ -673,6 +675,22 @@ pub fn load(cx: &mut Ctx, sheet: usize, at: CellRef, table: &str, grid: &Grid) -
         (Some(o), true) => sh.take_cells(RangeRef::new(CellRef::new(o.end.row, o.start.col), o.end)),
         _ => Vec::new(),
     };
+    // The added columns come out before anything is written where they were.
+    let added_cells: Vec<HashMap<u32, Cell>> = match old {
+        Some(o) => {
+            let last = if totals { o.end.row.saturating_sub(1) } else { o.end.row };
+            added
+                .iter()
+                .map(|a| {
+                    sh.take_cells(RangeRef::new(CellRef::new(o.start.row, a.col), CellRef::new(last.max(o.start.row), a.col)))
+                        .into_iter()
+                        .map(|(c, x)| (c.row, x))
+                        .collect()
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
     // Clear what the old table covered and the new one doesn't.
     if let Some(o) = old {
         let stale: Vec<CellRef> = sh.cells.iter_range(o).map(|(c, _)| c).filter(|c| o.contains(*c) && !new.contains(*c)).collect();
@@ -689,6 +707,24 @@ pub fn load(cx: &mut Ctx, sheet: usize, at: CellRef, table: &str, grid: &Grid) -
         }
         sh.set_value(c, value);
     }
+    // The calculated columns the user added, after the query's: every row gets the formula of
+    // their first row. It moves by rows only: its references are to the query's columns, which
+    // stay where they were when the calculated column itself shifts.
+    for (j, (a, cells)) in added.iter().zip(&added_cells).enumerate() {
+        let col = at.col + (width + j) as u32;
+        let header_row = old.map_or(at.row, |o| o.start.row);
+        let header_style = cells.get(&header_row).map(|x| x.style).unwrap_or_default();
+        sh.set_cell(CellRef::new(at.row, col), Cell { value: Value::text(a.column.name.as_str()), formula: None, style: header_style });
+        let Some(first) = cells.get(&a.first) else { continue };
+        for r in 0..grid.rows as u32 {
+            let dest = CellRef::new(at.row + 1 + r, col);
+            let mut c = moved(first, CellRef::new(a.first, col), dest);
+            if let Some(own) = cells.get(&(a.first + r)) {
+                c.style = own.style;
+            }
+            sh.set_cell(dest, c);
+        }
+    }
     let last_data = at.row + grid.rows as u32;
     if totals {
         let row = last_data + 1;
@@ -696,10 +732,14 @@ pub fn load(cx: &mut Ctx, sheet: usize, at: CellRef, table: &str, grid: &Grid) -
             sh.set_value(CellRef::new(row, c), Value::Empty);
         }
         if let Some(o) = old {
+            // Each totals cell goes under its column, wherever the column is now.
+            let old_names: Vec<String> =
+                existing.and_then(|i| sh.tables.get(i)).map(|t| t.columns.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
+            let names: Vec<&str> = headers.iter().map(String::as_str).chain(added.iter().map(|a| a.column.name.as_str())).collect();
             for (c, cell) in totals_cells {
-                let col = at.col + (c.col - o.start.col);
-                if col <= new.end.col {
-                    sh.set_cell(CellRef::new(row, col), cell);
+                let name = old_names.get((c.col - o.start.col) as usize);
+                if let Some(i) = name.and_then(|n| names.iter().position(|x| x.eq_ignore_ascii_case(n))) {
+                    sh.set_cell(CellRef::new(row, at.col + i as u32), cell);
                 }
             }
         }
@@ -716,6 +756,7 @@ pub fn load(cx: &mut Ctx, sheet: usize, at: CellRef, table: &str, grid: &Grid) -
     match existing.and_then(|i| sh.tables.get_mut(i)) {
         Some(t) => {
             t.columns = columns(&t.columns);
+            t.columns.extend(added.iter().map(|a| a.column.clone()));
             t.range = new;
             // Filters named columns by position: they no longer apply.
             t.filter.clear();
@@ -743,7 +784,46 @@ pub fn load(cx: &mut Ctx, sheet: usize, at: CellRef, table: &str, grid: &Grid) -
         }
     }
     cx.structural = true;
-    Ok(Loaded { range: new, rows: grid.rows, cols: width, errors })
+    Ok(Loaded { range: new, rows: grid.rows, cols: all_width, errors })
+}
+
+/// A calculated column the user added to a query's table: it stays, after the query's columns,
+/// when the query refreshes, its formula on every new row, as in Excel (observed by the author of
+/// storytold/gridcraft#1532). Other columns the query doesn't give are cleared with the old
+/// rows: nothing tells a column the user typed from one an older version of the query gave.
+struct Added {
+    column: TableColumn,
+    /// Where it was: its sheet column and the table's first data row.
+    col: u32,
+    first: u32,
+}
+
+/// The calculated columns of table `t` that the query's result (`headers`) doesn't have.
+fn added_columns(sh: &Sheet, t: &Table, headers: &[String]) -> Vec<Added> {
+    if !t.header_row {
+        return Vec::new();
+    }
+    let first = t.range.start.row + 1;
+    t.columns
+        .iter()
+        .enumerate()
+        .take(t.range.width() as usize)
+        .filter(|(_, c)| !headers.iter().any(|h| h.eq_ignore_ascii_case(&c.name)))
+        .map(|(i, c)| Added { column: c.clone(), col: t.range.start.col + i as u32, first })
+        .filter(|a| sh.cell(CellRef::new(first, a.col)).is_some_and(|x| x.formula.is_some()))
+        .collect()
+}
+
+/// `cell` moved from `from` to `to`: relative references in its formula move with it, and its
+/// value waits for the recalculation.
+fn moved(cell: &Cell, from: CellRef, to: CellRef) -> Cell {
+    let mut out = cell.clone();
+    if let Some(e) = cell.formula.as_ref().and_then(|f| f.expr()) {
+        let e = gridcraft_formula::adjust::shift_relative(e, to.row as i64 - from.row as i64, to.col as i64 - from.col as i64);
+        out.formula = Some(std::sync::Arc::new(Formula::from_expr(e)));
+        out.value = Value::Empty;
+    }
+    out
 }
 
 /// Widths that fit the header and the first rows of the loaded columns.

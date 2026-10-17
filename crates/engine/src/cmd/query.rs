@@ -780,4 +780,53 @@ mod tests {
         let p = s.execute("data.query.preview", json!({"formula": "let sum = (n) => if n = 0 then 0 else n + @sum(n - 1) in sum(1500)"})).unwrap();
         assert_eq!(p["rows"], json!([[1125750.0]]));
     }
+
+    #[test]
+    fn refresh_keeps_the_calculated_columns_the_user_added() {
+        // In Excel a calculated column added to a query's table stays when the query refreshes,
+        // its formula on every new row (observed by the author of storytold/gridcraft#1532).
+        // Before, the refresh cleared it with the old rows.
+        let mut s = session();
+        let source = "Excel.CurrentWorkbook(){[Name = \"Stock\"]}[Content]";
+        s.execute("data.query.add", json!({"name": "Q", "formula": source})).unwrap();
+        let table = s.doc().unwrap().wb.query("Q").unwrap().load_to.clone().unwrap();
+        // A calculated column D beside the query's three, and a column E of typed notes.
+        for (cell, input) in [("D1", "Total"), ("E1", "Note"), ("E2", "check")] {
+            s.execute("cell.set", json!({"sheet": "Q", "cell": cell, "input": input})).unwrap();
+        }
+        s.execute("table.resize", json!({"table": table, "range": "A1:E4"})).unwrap();
+        for r in 2..=4 {
+            s.execute("cell.set", json!({"sheet": "Q", "cell": format!("D{r}"), "input": format!("=B{r}*C{r}")})).unwrap();
+        }
+        // The source grows by a row, then the query refreshes.
+        s.execute("sheet.activate", json!({"sheet": "Sheet1"})).unwrap();
+        set(&mut s, "A5", json!([["cap", 2, 5]]));
+        s.execute("table.resize", json!({"table": "Stock", "range": "A1:C5"})).unwrap();
+        s.execute("data.query.refresh", json!({"name": "Q"})).unwrap();
+        assert_eq!(
+            values(&s, "Q", "A1:E5"),
+            json!([
+                ["Item", "Qty", "Price", "Total", null],
+                ["pen", 10.0, 1.5, 15.0, null],
+                ["ink", 0.0, 8.0, 0.0, null],
+                ["pad", 7.0, 3.0, 21.0, null],
+                ["cap", 2.0, 5.0, 10.0, null]
+            ])
+        );
+        let wb = &s.doc().unwrap().wb;
+        let sh = wb.sheet(wb.sheet_index("Q").unwrap()).unwrap();
+        let t = sh.tables.iter().find(|t| t.name == table).unwrap();
+        assert_eq!(t.range.a1(), "A1:D5");
+        assert_eq!(t.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["Item", "Qty", "Price", "Total"]);
+        assert_eq!(sh.cell(CellRef::parse("D5").unwrap()).and_then(|c| c.formula.clone()).map(|f| f.text.clone()).as_deref(), Some("B5*C5"));
+        // The query gains a column: the calculated one moves right and still reads Qty and Price.
+        let taxed = format!("Table.AddColumn({source}, \"Tax\", each [Price] * 10)");
+        s.execute("data.query.set", json!({"name": "Q", "formula": taxed})).unwrap();
+        assert_eq!(values(&s, "Q", "A1:E2"), json!([["Item", "Qty", "Price", "Tax", "Total"], ["pen", 10.0, 1.5, 15.0, 15.0]]));
+        // And loses it again: a column the query gave isn't kept as if the user had added it.
+        s.execute("data.query.set", json!({"name": "Q", "formula": source})).unwrap();
+        assert_eq!(values(&s, "Q", "A1:E2"), json!([["Item", "Qty", "Price", "Total", null], ["pen", 10.0, 1.5, 15.0, null]]));
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(values(&s, "Q", "D2:E2"), json!([[15.0, 15.0]]));
+    }
 }

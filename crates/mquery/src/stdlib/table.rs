@@ -978,15 +978,20 @@ fn fill(a: &[Value], up: bool) -> EResult<Value> {
 // ---------------------------------------------------------------- headers and shape
 
 /// Makes `names` unique by adding `_1`, `_2`… to repeats.
+/// Names made unique as `Table.PromoteHeaders` does: one counter runs over every repeat, so
+/// `Total, Total, Name, Name` become `Total, Total_1, Name, Name_2` (observed in Excel by the
+/// author of storytold/gridcraft#1532).
 pub(crate) fn dedupe(names: Vec<String>) -> Vec<Rc<str>> {
     let mut out: Vec<Rc<str>> = Vec::with_capacity(names.len());
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::with_capacity(names.len());
+    let mut k = 0u64;
     for n in names {
         let mut candidate = n.clone();
-        let mut k = 0;
-        while out.iter().any(|m| **m == *candidate) {
+        while taken.contains(&candidate) {
             k += 1;
             candidate = format!("{n}_{k}");
         }
+        taken.insert(candidate.clone());
         out.push(Rc::from(candidate));
     }
     out

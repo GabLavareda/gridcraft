@@ -562,6 +562,11 @@ fn table_headers_and_shape() {
         "{\"a\", \"a_1\", \"2024\"}"
     );
     assert_eq!(run("Table.ColumnNames(Table.PromoteHeaders(#table(2, {{\"a\", 5}})))"), "{\"a\", \"Column2\"}");
+    // One counter over every repeat, as Power Query numbers them.
+    assert_eq!(
+        run("Table.ColumnNames(Table.PromoteHeaders(#table(5, {{\"Total\", \"Total\", \"Name\", \"Name\", \"Total\"}})))"),
+        "{\"Total\", \"Total_1\", \"Name\", \"Name_2\", \"Total_3\"}"
+    );
     assert_eq!(run("Table.DemoteHeaders(#table({\"a\"}, {{1}}))"), "#table({\"Column1\"}, {{\"a\"}, {1}})");
     assert_eq!(run("Table.Transpose(#table({\"a\", \"b\"}, {{1, 2}, {3, 4}}))"), "#table({\"Column1\", \"Column2\"}, {{1, 3}, {2, 4}})");
     assert_eq!(
@@ -624,6 +629,13 @@ fn group_join_pivot() {
     assert_eq!(
         run(&format!("Table.Pivot({long} & {long}, {{\"A\", \"B\"}}, \"attr\", \"v\", List.Sum)")),
         "#table({\"k\", \"A\", \"B\"}, {{\"x\", 2, 4}, {\"y\", 6, null}})"
+    );
+    // Rows come out in the order of the other columns' values, not in the order met.
+    assert_eq!(
+        run(
+            "Table.Pivot(#table({\"K\", \"Att\", \"V\"}, {{\"b\", \"x\", 1}, {\"a\", \"x\", 2}, {\"b\", \"y\", 3}}), {\"x\", \"y\"}, \"Att\", \"V\")"
+        ),
+        "#table({\"K\", \"x\", \"y\"}, {{\"a\", 2, null}, {\"b\", 1, 3}})"
     );
     let wide = "#table({\"k\", \"A\", \"B\"}, {{\"x\", 1, 2}, {\"y\", 3, null}})";
     assert_eq!(

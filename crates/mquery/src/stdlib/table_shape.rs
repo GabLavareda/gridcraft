@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::keys::{Comparer, Grouper};
+use super::keys::{Comparer, Grouper, try_sort_by};
 use super::table::{check_size, col, cols, key_of, make, slot_at};
 use super::*;
 use crate::error::{EResult, EvalError, raise};
@@ -444,6 +444,17 @@ fn pivot(it: &mut Interp, a: &[Value]) -> EResult<Value> {
         }
     }
     check_size(groups.len(), keep.len() + pivots.len())?;
+    // Rows come out in the order of the other columns' values, as Power Query gives them
+    // (observed in Excel by the author of storytold/gridcraft#1532), not in the order met.
+    let groups = try_sort_by(groups, |(a, _), (b, _)| {
+        for i in &keep {
+            let o = crate::value::compare_values(&slot_at(a, *i).get().unwrap_or(Value::Null), &slot_at(b, *i).get().unwrap_or(Value::Null));
+            if o != std::cmp::Ordering::Equal {
+                return Ok(o);
+            }
+        }
+        Ok(std::cmp::Ordering::Equal)
+    })?;
     let mut rows = Vec::with_capacity(groups.len());
     for (first, cells) in groups {
         let mut row: Vec<Slot> = keep.iter().map(|i| slot_at(&first, *i)).collect();

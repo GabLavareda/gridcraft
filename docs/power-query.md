@@ -1,6 +1,6 @@
 # Queries (Get & Transform)
 
-> **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-15 · **Change:** minor (databases: SQL Server, PostgreSQL, MySQL, SQLite) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-16 · **Change:** minor (refresh keeps calculated columns; Table.Pivot row order; repeated headers) · **Target:** Microsoft Excel (Microsoft 365)
 
 A query is a named formula in the Power Query M language that produces a table. GridCraft keeps
 queries in the workbook, runs them, and loads their results into tables on sheets. This page says
@@ -33,9 +33,11 @@ still imports once, without making a query. Everything the interface does is als
   existing sheet. A list loads as one column, a record as names and values. `load: false` keeps a
   connection only, for other queries to use.
 - **Refreshing** runs the query again and replaces the table in place. The table grows or
-  shrinks; cells it no longer covers are cleared; a totals row moves with it. If the cells a
-  larger result needs are not empty, the refresh fails and nothing changes. Nothing refreshes on
-  its own, including when a workbook is opened.
+  shrinks; cells it no longer covers are cleared; a totals row moves with it. A calculated column
+  the user added to the table stays after the query's columns, its formula on every new row (as
+  in Excel); other columns the query no longer gives are cleared. If the cells a larger result
+  needs are not empty, the refresh fails and nothing changes. Nothing refreshes on its own,
+  including when a workbook is opened.
 - **One undo step** undoes a load or a refresh entirely (sheet, table, query).
 - **Types.** Dates, times, date-times and durations load as numbers with a number format;
   `Percentage.Type` columns get a percent format. A cell the user already formatted as a date
@@ -178,6 +180,7 @@ ordinary tables and the queries show as connection only, since no connection is 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Refresh keeps calculated columns the user added; `Table.Pivot` gives its rows in the order of the other columns' values and `Table.PromoteHeaders` numbers repeats with one counter, both as observed in Excel by the author of storytold/gridcraft#1532; compared with #1203, #1532 and #1430 on one workbook |
 | 2026-10-15 | minor | Databases: `Sql.Database`, `Sql.Databases`, `PostgreSQL.Database`, `MySQL.Database`, `SQLite.Database`, `Value.NativeQuery` with navigation tables read when opened; logins per server for the session; native query approval; Data › From Database |
 | 2026-10-14 | minor | The Query Editor (steps, formula, preview), the Queries & Connections pane, and From Table/Range, New Query, Refresh All on the Data tab; `data.query.parse` |
 | 2026-10-12 | major | Created: M language engine (`crates/mquery`), query commands, load and refresh to tables, Data Mashup part read and written |
