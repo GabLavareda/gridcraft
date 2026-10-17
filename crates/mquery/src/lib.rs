@@ -29,6 +29,7 @@ pub mod lexer;
 mod ops;
 pub mod parser;
 mod stdlib;
+pub mod step_edit;
 pub mod value;
 
 pub use ast::{SectionMember, Step, Steps};

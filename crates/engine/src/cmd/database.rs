@@ -19,12 +19,21 @@ const MAX_SQL: usize = 1 << 20;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(query "data.database.source", "Database / SQL", [], None,
+            "{name | formula} → {supported, kind?, server?, database?, schema?, table?, query?}; inspect a literal database source without connecting",
+            always, database_source),
+        cmd!(query "data.database.formula", "Database / SQL", [], None,
+            "{formula, kind, server | host + port?, database?, schema?, table | query} → {formula}; edit the source while preserving M transformations, without connecting",
+            always, edit_database_formula),
+        cmd!(query "data.source.formula", "Get Data", [], None,
+            "{kind: folder|xml|web|json|odata, path? (folder/xml), url? (web/json/odata)} → {formula}; builds M without reading anything",
+            always, source_formula),
         cmd!(
             "data.fromDatabase",
             "From Database",
             ["Data", "Get & Transform Data"],
             None,
-            "{kind, server | host + port?, database, username?, password?, encrypt?, trustServerCertificate?, remember?: false, schema? + table | query (SQL, approved by this call), name?, description?, load?: true, at?, sheet?} → a query that reads the table or runs the SQL, loaded like data.query.add: {name, formula, table?, sheet?, range?, rows?, cols?, errors?}",
+            "{kind, server | host + port?, database, username?, password?, encrypt?, trustServerCertificate?, remember?: false, schema? + table | query (SQL, approved by this call), edit?: existing query name (preserves transformations and load destination), name?, description?, load?: true, at?, sheet?} → {name, formula, table?, sheet?, range?, rows?, cols?, errors?}",
             has_doc,
             from_database
         ),
@@ -42,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Preview",
             [],
             None,
-            "{kind, server | host + port?, database, schema? + table | query, rows?: 50} → {columns: [{name, type}], rows, moreRows, errors} with the session's login",
+            "{kind, server | host + port?, database, schema? + table | query, rows?: 50, automatic?: false} → {columns: [{name, type}], rows, moreRows, errors}; automatic SQL previews accept a single simple SELECT, otherwise {manualRequired:true} without connecting",
             always,
             preview
         ),
@@ -222,6 +231,9 @@ fn preview(s: &mut Session, p: &Json) -> Result<Json> {
     let rows = u32_param(p, "rows").map_or(PREVIEW_ROWS, |n| (n as usize).clamp(1, MAX_PREVIEW_ROWS));
     let sql = sql_param(C, p)?.map(str::to_string);
     let table = str_param(p, "table").map(str::to_string);
+    if bool_param(p, "automatic").unwrap_or(false) && sql.as_deref().is_none_or(|q| !super::database_preview::automatic_select(q)) {
+        return Ok(json!({"manualRequired":true}));
+    }
     if sql.is_none() && table.is_none() {
         return Err(bad(C, "give a `table` or a `query`"));
     }
@@ -279,6 +291,30 @@ fn free_name(wb: &gridcraft_model::Workbook, base: &str) -> String {
     (2..).map(|k| format!("{base} ({k})")).find(|n| wb.query(n).is_none()).unwrap_or(base)
 }
 
+fn database_source(s: &mut Session, p: &Json) -> Result<Json> {
+    let formula = match str_param(p, "formula") {
+        Some(formula) => formula,
+        None => {
+            let name = str_param(p, "name").ok_or_else(|| bad("data.database.source", "give a `name` or `formula`"))?;
+            &s.doc()?.wb.query(name).ok_or_else(|| other(format!("There is no query named '{name}'.")))?.formula
+        }
+    };
+    Ok(super::database_source::describe(formula).map_or_else(|| json!({"supported":false}), |source| source.json()))
+}
+
+fn edit_database_formula(_s: &mut Session, p: &Json) -> Result<Json> {
+    const C: &str = "data.database.formula";
+    let formula = str_param(p, "formula").ok_or_else(|| bad(C, "missing `formula`"))?;
+    let (kind, server, database) = source(C, p)?;
+    let sql = sql_param(C, p)?;
+    let table = str_param(p, "table").map(str::trim).filter(|t| !t.is_empty());
+    let schema = str_param(p, "schema").unwrap_or_else(|| if kind == Kind::MySql { &database } else { kind.default_schema() });
+    let source = super::database_source::describe(formula).ok_or_else(|| bad(C, "Edit this source in the advanced M editor."))?;
+    let updated =
+        source.replace(formula, kind, &server, &database, schema, table, sql).ok_or_else(|| bad(C, "Choose a table or write a SQL statement."))?;
+    Ok(json!({"formula":updated}))
+}
+
 fn from_database(s: &mut Session, p: &Json) -> Result<Json> {
     const C: &str = "data.fromDatabase";
     let (kind, server, database) = source(C, p)?;
@@ -301,6 +337,16 @@ fn from_database(s: &mut Session, p: &Json) -> Result<Json> {
     if let Some(q) = &sql {
         // The user wrote this SQL here: it may run.
         s.data_sources.approve(kind, &server, &database, q);
+    }
+    if let Some(name) = str_param(p, "edit") {
+        let old = s.doc()?.wb.query(name).ok_or_else(|| other(format!("There is no query named '{name}'.")))?.formula.clone();
+        let updated = edit_database_formula(
+            s,
+            &json!({"formula":old,"kind":kind.id(),"server":server,"database":database,"schema":schema,"table":table,"query":sql}),
+        )?;
+        let mut out = super::query::set(s, &json!({"name":name,"formula":updated["formula"]}))?;
+        out["formula"] = updated["formula"].clone();
+        return Ok(out);
     }
     let formula = database_formula(kind, &server, &database, &schema, table.as_deref(), sql.as_deref());
     let name = match str_param(p, "name") {
@@ -374,6 +420,36 @@ fn approve(s: &mut Session, p: &Json) -> Result<Json> {
     }
     s.data_sources.approve(kind, &server, &database, sql);
     Ok(json!({"approved": true}))
+}
+
+fn source_formula(_: &mut Session, p: &Json) -> Result<Json> {
+    const C: &str = "data.source.formula";
+    let kind = str_param(p, "kind").ok_or_else(|| bad(C, "missing `kind`"))?;
+    let local = matches!(kind, "folder" | "xml");
+    let address = str_param(p, if local { "path" } else { "url" }).ok_or_else(|| bad(C, "missing path or URL"))?;
+    if address.trim().is_empty() || address.len() > 32_768 {
+        return Err(bad(C, "give a path or URL of at most 32768 bytes"));
+    }
+    if !local && crate::datasource::url_host(address).is_none() {
+        return Err(bad(C, "give an http:// or https:// URL"));
+    }
+    let q = gridcraft_mquery::quote_text(address);
+    let expression = match kind {
+        "folder" => format!("Folder.Files({q})"),
+        "xml" => format!("Xml.Tables(File.Contents({q}))"),
+        "web" => format!("Web.Page(Web.Contents({q}))"),
+        "json" => format!("Json.Document(Web.Contents({q}))"),
+        "odata" => format!("OData.Feed({q})"),
+        _ => return Err(bad(C, "unknown source kind")),
+    };
+    let formula = if kind == "json" {
+        format!(
+            "let\n    Source = {expression},\n    Data = if Value.Is(Source, type list) and (List.IsEmpty(Source) or Value.Is(Source{{0}}, type record)) then Table.FromRecords(Source) else Source\nin\n    Data"
+        )
+    } else {
+        format!("let\n    Source = {expression}\nin\n    Source")
+    };
+    Ok(json!({"formula": formula}))
 }
 
 fn approve_web(s: &mut Session, p: &Json) -> Result<Json> {
@@ -644,6 +720,13 @@ mod tests {
         assert_eq!(p["rows"], json!([["1", "2"], ["3", "4"]]));
         let names = format!("Folder.Files({path})[Name]");
         assert_eq!(s.execute("data.query.preview", json!({"formula": names})).unwrap()["rows"], json!([["a.csv"], ["b.csv"]]));
+        // Folder paths read as people write them: no Windows verbatim prefix (`\\?\`).
+        let folders = format!("Folder.Files({path})[Folder Path]");
+        let rows = s.execute("data.query.preview", json!({"formula": folders})).unwrap()["rows"].clone();
+        let first = rows[0][0].as_str().unwrap().to_string();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert!(!first.starts_with(r"\\?\") && first.ends_with(&format!("gridcraft-folder-{}{sep}", std::process::id())), "{first}");
+        assert!(rows[1][0].as_str().unwrap().ends_with(&format!("{sep}sub{sep}")), "{rows}");
         let _ = std::fs::remove_dir_all(&dir);
         let gone = s.execute("data.query.preview", json!({"formula": format!("Folder.Files({path})")})).unwrap_err().to_string();
         assert!(gone.contains("There is no folder"), "{gone}");

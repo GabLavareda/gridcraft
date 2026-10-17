@@ -32,7 +32,7 @@ pub struct FileEntry {
 
 /// Reads a web address (GET) with these headers: the body, or why not. `'static`, so that values
 /// read later (the entity sets of an OData service) can keep it.
-pub type Fetch = Rc<dyn Fn(&str, &[(String, String)]) -> Result<Vec<u8>, String>>;
+pub type Fetch = Rc<dyn Fn(&str, &[(String, String)], std::time::Duration) -> Result<Vec<u8>, String>>;
 
 /// The current moment: local ticks since 1970-01-01T00:00 and the offset from UTC in minutes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -4,6 +4,8 @@
 pub mod analysis;
 pub mod data;
 pub mod database;
+mod database_preview;
+mod database_source;
 pub mod draw;
 pub mod edit;
 pub mod extra;
@@ -16,6 +18,7 @@ pub mod inspect;
 pub mod pivot;
 pub mod print;
 pub mod query;
+mod query_steps;
 pub mod review;
 pub mod sheet;
 pub mod slicer;
@@ -138,6 +141,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(inspect::specs());
         v.extend(extra::specs());
         v.extend(query::specs());
+        v.extend(query_steps::specs());
         v.extend(database::specs());
         v.extend(draw::specs());
         v.extend(spelling::specs());

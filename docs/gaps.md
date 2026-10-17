@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (queries: databases) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** minor (query sources and transformations) · **Target:** Microsoft Excel (Microsoft 365)
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using GridCraft for real work first). This is the work list: pick from the top, check the open
@@ -102,18 +102,20 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
   100–165 h including #5. [localization-parity.md](localization-parity.md)
 
 ### 12. Get & Transform, external data, data model (F)
-- **In:** the Power Query M language (`crates/mquery`: evaluator and 426 library functions),
+- **In:** the Power Query M language (`crates/mquery`: evaluator and 431 library functions),
   queries kept in the workbook, loaded to tables and refreshed (`data.query.*`,
-  `data.refreshAll`), saved and read as Excel's Data Mashup part. Sources: the workbook's own
-  tables, CSV, JSON, local files, other workbooks, and SQL Server, PostgreSQL, MySQL/MariaDB and
-  SQLite databases with a login kept for the session (`crates/db`). [power-query.md](power-query.md)
-- **In the interface:** the Query Editor (applied steps, formula, preview) and the Queries &
-  Connections pane; From Database, From Table/Range, New Query and Refresh All on the Data tab.
-- **Missing:** the editor's transform commands that write steps; Get Data and From Text/CSV
-  making queries; From Web, folders, Oracle/ODBC and Windows logins;
-  connections and query tables for new queries, so that Excel refreshes them; relationships and
-  the data model (`data.fromWeb`, `data.relationships` missing). Not verified in Excel.
-  **Estimate:** 40–70 h.
+  `data.refreshAll`), saved and read as Excel's Data Mashup part. Sources: workbook tables,
+  CSV, JSON, local files, other workbooks, folders, XML, HTML tables, approved HTTP(S) sites,
+  OData and SQL Server/PostgreSQL/MySQL/SQLite. The desktop can remember database logins in
+  the OS credential store, including Linux Secret Service. [power-query.md](power-query.md)
+- **In the interface:** Query Editor with column selection, 16 transformations that write M,
+  step rename/removal and nested-table navigation; Queries & Connections pane; source dialogs
+  for folders, XML, Web, JSON and OData, alongside the database and table/range controls.
+- **Missing:** Get Data/Text/CSV making queries, Oracle/ODBC and Windows database logins;
+  connections and query tables for new queries so Excel refreshes them; relationships and the
+  data model; background evaluation/cancellation, query folding and privacy levels.
+  Credential-store behavior on real Linux/macOS desktops remains unverified here.
+  **Estimate:** reassessment needed after these local changes.
 
 ### 13. Analysis tools: Solver, Analysis ToolPak, Forecast Sheet (F)
 - `data.solver`, `data.analysisToolPak` missing. Forecast Sheet (`data.forecastSheet`) and the
@@ -178,6 +180,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-17 | minor | §12: additional sources, per-site HTTP access, visual transformations and OS credential storage |
 | 2026-10-15 | minor | §12: databases (SQL Server, PostgreSQL, MySQL, SQLite) and Data › From Database |
 | 2026-10-14 | minor | §12: Query Editor and Queries & Connections pane |
 | 2026-10-12 | minor | §12: queries in the Power Query M language run, load to tables and refresh; saved as the Data Mashup part. The editor and more sources remain |

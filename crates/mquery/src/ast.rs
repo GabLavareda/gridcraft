@@ -162,6 +162,8 @@ pub enum Expr {
     /// own definition a member sees the outer name, unless it is written `@name` (`inclusive`).
     Ident {
         name: Rc<str>,
+        /// The identifier's byte range in its source (without an inclusive `@`).
+        span: (usize, usize),
         skip: u8,
         inclusive: bool,
     },

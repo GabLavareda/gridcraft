@@ -1891,6 +1891,17 @@ fn data(app: &mut SheetApp, ui: &mut Ui) {
     if gd.clicked() {
         app.open_dialog("open", json!({}));
     }
+    let language = crate::i18n::current(ui.ctx());
+    ui.menu_button(language.tr("More Sources"), |ui| {
+        for (kind, label) in
+            [("folder", "From Folder"), ("xml", "From XML"), ("web", "From Web"), ("json", "JSON from Web"), ("odata", "From OData Feed")]
+        {
+            if ui.button(language.tr(label)).clicked() {
+                ui.close();
+                app.open_dialog("fromSource", json!({"kind": kind}));
+            }
+        }
+    });
     // Queries (Get & Transform): made and edited in the Query Editor, listed in their pane.
     ui.vertical(|ui| {
         let __k =

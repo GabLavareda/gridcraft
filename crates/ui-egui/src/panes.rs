@@ -336,7 +336,7 @@ fn queries(app: &mut SheetApp, ui: &mut Ui) {
             }
             ui.horizontal(|ui| {
                 if ui.small_button(tr(ui, "Edit")).clicked() {
-                    app.open_dialog("queryEditor", json!({"name": name}));
+                    crate::database_dialog::edit_query(app, &name);
                 }
                 let loaded = q["sheet"].is_string();
                 if loaded {

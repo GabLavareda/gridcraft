@@ -4,8 +4,8 @@
 //! The M evaluator (`gridcraft-mquery`) does no I/O. [`WorkbookHost`] is what a query can reach:
 //! the tables and named ranges of its own workbook (`Excel.CurrentWorkbook`), local files
 //! (`File.Contents`, off the web build only), workbook files (`Excel.Workbook`), the clock, and
-//! databases the user gave a login for in this session ([`crate::datasource`]). Nothing else
-//! opens the network.
+//! databases the user gave a login for in this session ([`crate::datasource`]), folders and web
+//! sites explicitly approved for the session. The evaluator itself never opens the network.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -279,15 +279,28 @@ impl mq::Host for WorkbookHost<'_> {
 }
 
 /// Most files `Folder.Files` lists, and the deepest subfolder it goes into.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_FOLDER_FILES: usize = 100_000;
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_FOLDER_DEPTH: usize = 64;
+
+/// A path as people write it. On Windows a canonical path is a verbatim one (`\\?\C:\data`,
+/// `\\?\UNC\server\share`): the prefix goes, as Power Query never shows it.
+#[cfg(not(target_arch = "wasm32"))]
+fn display_path(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy();
+    if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}");
+    }
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+}
 
 /// The files under `path`, subfolders included, sorted by path. Their contents are read when a
 /// query reads them.
 #[cfg(not(target_arch = "wasm32"))]
 fn folder_files(path: &str) -> Result<Vec<mq::FileEntry>, String> {
     use std::time::UNIX_EPOCH;
-    let root = std::path::Path::new(path.trim());
+    let root = std::fs::canonicalize(path).map_err(|e| format!("There is no folder '{path}': {e}"))?;
     if !root.is_dir() {
         return Err(format!("There is no folder '{path}'."));
     }
@@ -297,15 +310,33 @@ fn folder_files(path: &str) -> Result<Vec<mq::FileEntry>, String> {
     };
     let mut out = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut visited = 0usize;
     while let Some((dir, depth)) = stack.pop() {
+        visited += 1;
+        if visited > MAX_FOLDER_FILES {
+            return Err(format!("The folder '{path}' contains too many folders."));
+        }
         let entries = std::fs::read_dir(&dir).map_err(|e| format!("The folder '{}' can't be read: {e}", dir.display()))?;
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("The folder '{}' can't be read: {e}", dir.display()))?;
             let p = entry.path();
-            let Ok(meta) = entry.metadata() else { continue };
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            // Do not follow symlinks (including Linux links back to an ancestor).
+            if kind.is_symlink() {
+                continue;
+            }
+            let meta = entry.metadata().map_err(|e| e.to_string())?;
             if meta.is_dir() {
-                if depth < MAX_FOLDER_DEPTH {
-                    stack.push((p, depth + 1));
+                if depth >= MAX_FOLDER_DEPTH {
+                    return Err(format!("The folder '{path}' exceeds {MAX_FOLDER_DEPTH} levels."));
                 }
+                if stack.len() >= MAX_FOLDER_FILES {
+                    return Err(format!("The folder '{path}' contains too many folders."));
+                }
+                stack.push((p, depth + 1));
+                continue;
+            }
+            if !kind.is_file() {
                 continue;
             }
             if out.len() >= MAX_FOLDER_FILES {
@@ -316,11 +347,11 @@ fn folder_files(path: &str) -> Result<Vec<mq::FileEntry>, String> {
             let hidden = std::os::windows::fs::MetadataExt::file_attributes(&meta) & 0x2 != 0;
             #[cfg(not(windows))]
             let hidden = name.starts_with('.');
-            let mut folder = dir.to_string_lossy().into_owned();
+            let mut folder = display_path(&dir);
             if !folder.ends_with(std::path::MAIN_SEPARATOR) {
                 folder.push(std::path::MAIN_SEPARATOR);
             }
-            let full = p.to_string_lossy().into_owned();
+            let full = display_path(&p);
             out.push(mq::FileEntry {
                 name,
                 folder,

@@ -29,8 +29,10 @@ pub mod paper_view;
 pub mod pivot_pane;
 pub mod printing;
 pub mod query_editor;
+mod query_transforms;
 pub mod ribbon;
 pub mod selection_glide;
+pub mod source_dialog;
 pub mod tabs;
 pub mod text_box;
 pub mod theme;
@@ -176,6 +178,9 @@ pub struct Services {
     pub pick_picture: Option<Box<dyn Fn() -> Option<String>>>,
     /// Native picker for a SQLite database file (Data › From Database).
     pub pick_database: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Native source pickers, shared by Windows, macOS and Linux desktops.
+    pub pick_folder: Option<Box<dyn Fn() -> Option<String>>>,
+    pub pick_xml: Option<Box<dyn Fn() -> Option<String>>>,
     /// Browser picture picker. Each dialog owns its inbox, so canceled picks cannot
     /// insert into a subsequent dialog or open the image as a workbook.
     pub pick_picture_async: Option<Box<dyn Fn(Inbox)>>,

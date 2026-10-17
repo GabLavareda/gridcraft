@@ -99,3 +99,95 @@ fn a_table_is_needed_for_from_table_range() {
     assert!(h.state().dialog.is_none());
     assert_eq!(h.state().message.as_ref().map(|m| m.0.as_str()), Some("From Table/Range"));
 }
+
+#[test]
+fn transformations_edit_steps_then_save_the_result() {
+    let mut h = harness();
+    from_table_range(&mut h);
+    click(&mut h, "Qty");
+    click(&mut h, "Filter Rows");
+    {
+        let d = h.state_mut().dialog.as_mut().unwrap();
+        d.values.insert("operator".into(), json!(">"));
+        d.values.insert("value".into(), json!("5"));
+        d.values.insert("valueType".into(), json!("number"));
+    }
+    click(&mut h, "Apply Transformation");
+    assert!(h.state().session.active().unwrap().wb.queries.is_empty());
+    assert_eq!(h.state().dialog.as_ref().unwrap().values["preview"]["rows"], json!([["pen", 10.0], ["pad", 7.0]]));
+    click(&mut h, "Qty");
+    click(&mut h, "Remove Columns");
+    assert_eq!(h.state().dialog.as_ref().unwrap().values["preview"]["rows"], json!([["pen"], ["pad"]]));
+    click(&mut h, "  Filtered Rows");
+    click(&mut h, "Rename Step");
+    h.state_mut().dialog.as_mut().unwrap().values.insert("renameStepTo".into(), json!("In Stock"));
+    click(&mut h, "Apply Step Name");
+    click(&mut h, "  In Stock");
+    click(&mut h, "Remove Step");
+    assert_eq!(h.state().dialog.as_ref().unwrap().values["preview"]["rows"], json!([["pen"], ["ink"], ["pad"]]));
+    click(&mut h, "Save");
+    assert!(h.state().dialog.is_none());
+    assert_eq!(cell(&h, "Stock", "A3"), Value::text("ink"));
+}
+
+#[test]
+fn xml_source_can_be_opened_and_loaded_without_writing_m() {
+    let mut h = harness();
+    let path = std::env::temp_dir().join(format!("gridcraft-source-ui-{}.xml", std::process::id()));
+    std::fs::write(&path, "<root><row><a>one</a></row><row><a>two</a></row></root>").unwrap();
+    h.state_mut().open_dialog("fromSource", json!({"kind":"xml","path":path.to_string_lossy()}));
+    h.run_steps(4);
+    click(&mut h, "Transform Data");
+    assert_eq!(h.state().dialog.as_ref().unwrap().name(), "queryEditor");
+    click(&mut h, "Open Table");
+    assert_eq!(h.state().dialog.as_ref().unwrap().values["preview"]["rows"], json!([["one"], ["two"]]));
+    click(&mut h, "Save");
+    assert_eq!(cell(&h, "Query1", "A2"), Value::text("one"));
+    std::fs::remove_file(path).unwrap();
+}
+
+// The web tests use a closed port on this computer: nothing leaves the machine.
+
+#[test]
+fn a_site_typed_in_get_data_is_allowed() {
+    let mut h = harness();
+    h.state_mut().open_dialog("fromSource", json!({"kind":"json","url":"http://127.0.0.1:9/data.json"}));
+    h.run_steps(4);
+    click(&mut h, "Transform Data");
+    let d = h.state().dialog.as_ref().unwrap();
+    assert_eq!(d.name(), "queryEditor", "no permission asked for the site the user typed");
+    assert!(d.values["formula"].as_str().unwrap().contains("Json.Document"));
+    assert!(h.state().session.data_sources.is_web_approved("127.0.0.1:9"));
+}
+
+#[test]
+fn a_site_named_by_a_query_asks_for_permission_and_cancel_returns_to_the_editor() {
+    let mut h = harness();
+    let formula = "Json.Document(Web.Contents(\"http://127.0.0.1:9/data.json\"))";
+    h.state_mut().open_dialog("queryEditor", json!({"formula": formula, "autoPreview": true}));
+    h.run_steps(4);
+    assert_eq!(h.state().dialog.as_ref().unwrap().name(), "webAccess");
+    h.get_by_label("127.0.0.1:9");
+    click(&mut h, "Cancel");
+    assert_eq!(h.state().dialog.as_ref().unwrap().name(), "queryEditor");
+    assert!(!h.state().session.data_sources.is_web_approved("127.0.0.1:9"));
+}
+
+#[test]
+fn ctrl_click_selects_multiple_columns_and_row_actions_need_no_selection() {
+    let mut h = harness();
+    from_table_range(&mut h);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Item").click();
+    h.run_steps(4);
+    h.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::CTRL));
+    h.run_steps(1);
+    click(&mut h, "Qty");
+    assert_eq!(h.state().dialog.as_ref().unwrap().values["selectedColumns"], json!(["Item", "Qty"]));
+    h.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.state_mut().dialog.as_mut().unwrap().values.remove("selectedColumns");
+    h.run_steps(2);
+    click(&mut h, "Keep Top Rows");
+    h.state_mut().dialog.as_mut().unwrap().values.insert("count".into(), json!(1));
+    click(&mut h, "Apply Transformation");
+    assert_eq!(h.state().dialog.as_ref().unwrap().values["preview"]["rows"], json!([["pen", 10.0]]));
+}

@@ -63,11 +63,13 @@ pub fn defaults(app: &mut SheetApp, params: &Json) -> Option<Json> {
             "let\n    Source = #table({\"Item\", \"Qty\"}, {{\"pen\", 10}, {\"ink\", 3}}),\n    Kept = Table.SelectRows(Source, each [Qty] > 5)\nin\n    Kept".to_string(),
         ),
     };
-    Some(json!({"original": null, "name": name, "formula": formula, "description": "", "load": true, "autoPreview": table.is_some()}))
+    Some(
+        json!({"original": null, "name": name, "formula": formula, "description": "", "load": true, "autoPreview": table.is_some() || params["autoPreview"] == true}),
+    )
 }
 
 /// Runs the preview of the whole formula, or of the selected step.
-fn run_preview(app: &mut SheetApp, d: &mut Dialog) {
+pub(crate) fn run_preview(app: &mut SheetApp, d: &mut Dialog) {
     let mut params = json!({"formula": text(&d.values, "formula"), "rows": PREVIEW_ROWS});
     // The query being edited stands in for the stored one under its stored name.
     let original = d.values.get("original").and_then(Json::as_str).map(str::to_string);
@@ -134,7 +136,7 @@ pub(crate) fn cell_text(v: &Json) -> (String, Option<String>) {
     }
 }
 
-fn preview(ui: &mut Ui, d: &Dialog) {
+fn preview(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog) {
     if let Some(e) = d.values.get("previewError").and_then(Json::as_str) {
         ui.label(RichText::new(e).color(Color32::from_rgb(0xC4, 0x2B, 0x1C)));
         return;
@@ -157,17 +159,42 @@ fn preview(ui: &mut Ui, d: &Dialog) {
         summary.push_str(" · the formula changed since");
     }
     ui.label(RichText::new(summary).small().color(Color32::from_gray(110)));
+    let mut navigate = None;
     egui::ScrollArea::both().id_salt("query_preview").max_height(230.0).auto_shrink([false, true]).show(ui, |ui| {
         egui::Grid::new("query_preview_grid").striped(true).min_col_width(60.0).show(ui, |ui| {
+            let mut selected: Vec<String> =
+                d.values.get("selectedColumns").and_then(Json::as_array).into_iter().flatten().filter_map(Json::as_str).map(str::to_string).collect();
             for c in &columns {
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(c["name"].as_str().unwrap_or("")).strong());
+                    let name = c["name"].as_str().unwrap_or("");
+                    if ui
+                        .selectable_label(selected.iter().any(|n| n == name), RichText::new(name).strong())
+                        .on_hover_text(tr(ui, "Click to select a column; Ctrl/Command-click to select several."))
+                        .clicked()
+                    {
+                        if ui.input(|i| i.modifiers.ctrl || i.modifiers.command) {
+                            if selected.iter().any(|n| n == name) {
+                                selected.retain(|n| n != name);
+                            } else {
+                                selected.push(name.to_string());
+                            }
+                        } else {
+                            selected = vec![name.to_string()];
+                        }
+                    }
                     ui.label(RichText::new(c["type"].as_str().unwrap_or("")).small().color(Color32::GRAY));
                 });
             }
+            d.values.insert("selectedColumns".into(), json!(selected));
             ui.end_row();
-            for row in &rows {
-                for v in row.as_array().into_iter().flatten() {
+            for (row_index, row) in rows.iter().enumerate() {
+                for (column_index, v) in row.as_array().into_iter().flatten().enumerate() {
+                    if v.as_str() == Some("[Table]") {
+                        if ui.link(tr(ui, "Open Table")).clicked() {
+                            navigate = Some((row_index, columns.get(column_index).and_then(|c| c["name"].as_str()).unwrap_or("").to_string()));
+                        }
+                        continue;
+                    }
                     match cell_text(v) {
                         (t, Some(why)) => {
                             ui.label(RichText::new(t).color(Color32::from_rgb(0xC4, 0x2B, 0x1C))).on_hover_text(why);
@@ -184,6 +211,14 @@ fn preview(ui: &mut Ui, d: &Dialog) {
             }
         });
     });
+    if let Some((row, column)) = navigate {
+        crate::query_transforms::edit_step(
+            app,
+            d,
+            "data.query.addStep",
+            json!({"op":"navigate","name":text(&d.values,"original"),"params":{"row":row,"column":column}}),
+        );
+    }
 }
 
 /// Draws the editor; `open` turns false when it should close.
@@ -223,7 +258,7 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut bool) {
         ui.vertical(|ui| {
             ui.set_width(170.0);
             ui.label(RichText::new(tr(ui, "Applied Steps")).strong());
-            egui::ScrollArea::vertical().id_salt("query_steps").max_height(BAND_HEIGHT - 24.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("query_steps").max_height(BAND_HEIGHT - 52.0).show(ui, |ui| {
                 let steps = parsed["steps"].as_array().cloned().unwrap_or_default();
                 if ui.selectable_label(selected.is_none(), tr(ui, "Result")).clicked() {
                     clicked = Some(None);
@@ -236,6 +271,17 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut bool) {
                     }
                 }
             });
+            if let Some(step) = &selected {
+                ui.horizontal(|ui| {
+                    if ui.small_button(tr(ui, "Rename Step")).clicked() {
+                        d.values.insert("renameStep".into(), json!(step));
+                        d.values.insert("renameStepTo".into(), json!(step));
+                    }
+                    if ui.small_button(tr(ui, "Remove Step")).clicked() {
+                        crate::query_transforms::edit_step(app, d, "data.query.removeStep", json!({"step":step}));
+                    }
+                });
+            }
         });
         ui.separator();
         // The formula.
@@ -255,6 +301,8 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut bool) {
         });
     });
     if let Some(step) = clicked {
+        d.values.remove("selectedColumns");
+        d.values.remove("transform");
         match step {
             Some(s) => d.values.insert("step".into(), json!(s)),
             None => d.values.remove("step"),
@@ -271,7 +319,8 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui, d: &mut Dialog, open: &mut bool) {
             ui.label(RichText::new(format!("{}: {step}", tr(ui, "Step"))).small().color(Color32::GRAY));
         }
     });
-    preview(ui, d);
+    crate::query_transforms::toolbar(app, ui, d);
+    preview(app, ui, d);
 
     ui.add_space(8.0);
     if let Some(e) = d.values.get("saveError").and_then(Json::as_str) {

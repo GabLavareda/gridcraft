@@ -1952,6 +1952,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "ureq",
+ "url",
  "zip",
 ]
 
@@ -1998,6 +1999,7 @@ name = "gridcraft-mquery"
 version = "0.7.0"
 dependencies = [
  "quick-xml",
+ "url",
 ]
 
 [[package]]

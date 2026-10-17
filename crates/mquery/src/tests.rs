@@ -1218,14 +1218,14 @@ impl Host for SourcesHost {
     }
     fn web(&self) -> Option<crate::Fetch> {
         let log = self.log.clone();
-        Some(Rc::new(move |url: &str, headers: &[(String, String)]| {
+        Some(Rc::new(move |url: &str, headers: &[(String, String)], _timeout| {
             log.borrow_mut().push(format!("GET {url} {headers:?}"));
             let body = match url {
                 "https://svc.test/odata/" | "https://svc.test/odata" => r#"{"value": [{"name": "People", "kind": "EntitySet", "url": "People"}]}"#,
-                "https://svc.test/odata/People" => {
-                    r#"{"value": [{"Id": 1, "Name": "Ana"}], "@odata.nextLink": "https://svc.test/odata/People?page=2"}"#
-                }
+                "https://svc.test/odata/People" => r#"{"value": [{"Id": 1, "Name": "Ana"}], "@odata.nextLink": "?page=2"}"#,
                 "https://svc.test/odata/People?page=2" => r#"{"value": [{"Id": 2, "Name": "Bo", "@odata.etag": "x"}]}"#,
+                "https://svc.test/cycle" => r#"{"value": [{"Id":1}], "@odata.nextLink":"/cycle"}"#,
+                "https://svc.test/cross-site" => r#"{"value": [], "@odata.nextLink":"https://other.test/data"}"#,
                 u if u.starts_with("https://api.test/") => r#"{"ok": true}"#,
                 _ => return Err(format!("404 for {url}")),
             };
@@ -1316,4 +1316,12 @@ fn web_contents_and_odata_feeds() {
         r#"#table({"Id", "Name"}, {{1, "Ana"}, {2, "Bo"}})"#
     );
     assert_eq!(run_with(&host, r#"Table.RowCount(OData.Feed("https://svc.test/odata/People"))"#), "2");
+    assert!(run_with(&host, r#"OData.Feed("https://svc.test/cycle")"#).contains("repeats a page"));
+    assert!(run_with(&host, r#"OData.Feed("https://svc.test/cross-site")"#).contains("another site"));
+    let get = r#"Web.Contents("https://api.test/v1?existing=1#fragment", [RelativePath="items", Query=[q="á &"], Timeout=#duration(0,0,0,2)])"#;
+    assert!(!run_with(&host, get).starts_with("ERROR"));
+    assert!(host.log.borrow().last().unwrap().contains("/v1/items?existing=1&q=%C3%A1%20%26 "));
+    for duration in ["#duration(0,0,0,0)", "#duration(1,0,0,0)", "\"wrong\""] {
+        assert!(run_with(&host, &format!(r#"Web.Contents("https://api.test", [Timeout={duration}])"#)).contains("Timeout must"));
+    }
 }

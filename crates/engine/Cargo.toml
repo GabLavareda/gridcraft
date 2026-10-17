@@ -25,6 +25,7 @@ gridcraft-xlsx = { workspace = true }
 gridcraft-chart = { workspace = true }
 gridcraft-pdf = { workspace = true }
 image = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 gridcraft-xlsx = { workspace = true, features = ["test-support"] }

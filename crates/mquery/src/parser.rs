@@ -515,15 +515,17 @@ impl<'a> Parser<'a> {
                 // `Section1!Query1`: the section name is dropped, there is one section.
                 if matches!(self.peek(), Tok::Bang) && matches!(self.peek2(), Tok::Ident(_)) {
                     self.bump();
+                    let span = (self.cur().start, self.cur().end);
                     let member = self.identifier("a name")?;
-                    return Ok((Expr::Ident { name: member, skip: 0, inclusive: false }, 1));
+                    return Ok((Expr::Ident { name: member, span, skip: 0, inclusive: false }, 1));
                 }
-                Ok((Expr::Ident { name, skip: 0, inclusive: false }, 1))
+                Ok((Expr::Ident { name, span: (t.start, t.end), skip: 0, inclusive: false }, 1))
             }
             Tok::At => {
                 self.bump();
+                let span = (self.cur().start, self.cur().end);
                 let name = self.identifier("a name after @")?;
-                Ok((Expr::Ident { name, skip: 0, inclusive: true }, 1))
+                Ok((Expr::Ident { name, span, skip: 0, inclusive: true }, 1))
             }
             Tok::Ellipsis => {
                 self.bump();
@@ -758,7 +760,7 @@ fn bindings(members: Vec<(Rc<str>, Expr, (usize, usize))>) -> Rc<Bindings> {
 /// between that define `name` again hide it, except in their own member of that name.
 fn mark_self_refs(e: &mut Expr, name: &str) {
     match e {
-        Expr::Ident { name: n, skip, inclusive } => {
+        Expr::Ident { name: n, skip, inclusive, .. } => {
             if !*inclusive && &**n == name {
                 *skip = skip.saturating_add(1);
             }

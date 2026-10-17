@@ -130,16 +130,17 @@ fn url_encode(s: &str) -> String {
 /// The URL `Web.Contents` asks for: `RelativePath` after the base and `Query` added to its query
 /// string.
 pub(crate) fn web_url(base: &str, options: Option<&crate::value::Record>) -> EResult<(String, Vec<(String, String)>)> {
-    let mut url = base.trim().to_string();
+    let mut url = url::Url::parse(base.trim()).map_err(|e| ds(format!("Invalid web address: {e}")))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host().is_none() || !url.username().is_empty() || url.password().is_some() {
+        return raise("This isn't a web address: it should start with http:// or https:// and contain no login.");
+    }
     let mut headers = Vec::new();
     if let Some(o) = options {
         if let Some(Value::Text(p)) = o.get("RelativePath")?
             && !p.trim_start_matches('/').is_empty()
         {
-            if !url.ends_with('/') {
-                url.push('/');
-            }
-            url.push_str(p.trim_start_matches('/'));
+            let path = format!("{}/{}", url.path().trim_end_matches('/'), p.trim_start_matches('/'));
+            url.set_path(&path);
         }
         match o.get("Query")? {
             None | Some(Value::Null) => {}
@@ -150,10 +151,9 @@ pub(crate) fn web_url(base: &str, options: Option<&crate::value::Record>) -> ERe
                         Value::Number(n) => crate::value::number_to_text(n),
                         v => return mismatch(&v, "text for a query parameter"),
                     };
-                    url.push(if url.contains('?') { '&' } else { '?' });
-                    url.push_str(&url_encode(name));
-                    url.push('=');
-                    url.push_str(&url_encode(&v));
+                    let pair = format!("{}={}", url_encode(name), url_encode(&v));
+                    let query = url.query().map_or_else(|| pair.clone(), |q| format!("{q}&{pair}"));
+                    url.set_query(Some(&query));
                 }
             }
             Some(v) => return mismatch(&v, "a record of query parameters"),
@@ -174,10 +174,8 @@ pub(crate) fn web_url(base: &str, options: Option<&crate::value::Record>) -> ERe
             return raise("Web.Contents only reads (GET): sending Content isn't supported.");
         }
     }
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return raise(format!("'{url}' isn't a web address: it should start with http:// or https://."));
-    }
-    Ok((url, headers))
+    url.set_fragment(None);
+    Ok((url.into(), headers))
 }
 
 fn fetcher(it: &Interp) -> EResult<Fetch> {
@@ -189,7 +187,13 @@ fn web_contents(it: &mut Interp, a: &[Value]) -> EResult<Value> {
     let options = opt_record(a, 1)?;
     let (url, headers) = web_url(&base, options.as_deref())?;
     let fetch = fetcher(it)?;
-    let body = fetch(&url, &headers).map_err(ds)?;
+    let timeout = match options.as_deref().map(|o| o.get("Timeout")).transpose()?.flatten() {
+        None | Some(Value::Null) => std::time::Duration::from_secs(100),
+        Some(Value::Duration(ticks)) if ticks > 0 && ticks <= 36_000_000_000 => std::time::Duration::from_nanos(ticks as u64 * 100),
+        _ => return raise("Timeout must be a positive duration of at most one hour."),
+    };
+    let body = fetch(&url, &headers, timeout).map_err(ds)?;
+    check_bytes(body.len())?;
     Ok(Value::Binary(body.into()))
 }
 
@@ -210,13 +214,22 @@ fn odata_feed(it: &mut Interp, a: &[Value]) -> EResult<Value> {
     let doc = fetch_json(&fetch, &url, &headers)?;
     // A service document lists entity sets: each one's rows come when it is opened.
     if let Some(sets) = service_sets(&doc) {
-        let base = if url.ends_with('/') { url.clone() } else { format!("{url}/") };
+        let mut service_url = url::Url::parse(&url).map_err(|e| ds(e.to_string()))?;
+        if !service_url.path().ends_with('/') {
+            service_url.set_path(&format!("{}/", service_url.path()));
+        }
+        let base = service_url.to_string();
         let rows: Vec<Row> = sets
             .into_iter()
             .map(|(name, href)| {
-                let target = if href.starts_with("http://") || href.starts_with("https://") { href } else { format!("{base}{href}") };
+                let target = resolve_url(&base, &href);
                 let (fetch, headers) = (fetch.clone(), headers.clone());
-                let data = Lazy::new(move || feed_table(&fetch, &target, &headers).map(Value::Table).map_err(lazy_error));
+                let data = Lazy::new(move || {
+                    target
+                        .as_ref()
+                        .map_err(|e| lazy_error(ds(e.clone())))
+                        .and_then(|target| feed_table(&fetch, target, &headers).map(Value::Table).map_err(lazy_error))
+                });
                 [Slot::Val(Value::text(&name)), Slot::Lazy(data), Slot::Val(Value::text("Table"))].into_iter().collect()
             })
             .collect();
@@ -229,13 +242,15 @@ fn odata_feed(it: &mut Interp, a: &[Value]) -> EResult<Value> {
     let (rows, next) = feed_page(&doc)?;
     let mut all = rows;
     if let Some(next) = next {
-        all.extend(more_pages(&fetch, next, &headers)?);
+        let more = more_pages(&fetch, &url, next, &headers, &all)?;
+        all.extend(more);
     }
     Ok(Value::Table(Rc::new(records_table(all)?)))
 }
 
 fn fetch_json(fetch: &Fetch, url: &str, headers: &[(String, String)]) -> EResult<Value> {
-    let body = fetch(url, headers).map_err(ds)?;
+    let body = fetch(url, headers, std::time::Duration::from_secs(100)).map_err(ds)?;
+    check_bytes(body.len())?;
     super::json::parse(&String::from_utf8_lossy(&body))
 }
 
@@ -281,15 +296,45 @@ fn feed_page(doc: &Value) -> EResult<(Vec<Rc<crate::value::Record>>, Option<Stri
     Ok((out, next))
 }
 
-fn more_pages(fetch: &Fetch, mut next: String, headers: &[(String, String)]) -> EResult<Vec<Rc<crate::value::Record>>> {
+fn resolve_url(base: &str, next: &str) -> Result<String, String> {
+    let base = url::Url::parse(base).map_err(|e| e.to_string())?;
+    let target = base.join(next).map_err(|e| e.to_string())?;
+    if target.origin() != base.origin() {
+        return Err("An OData link points to another site; refusing to forward its headers.".into());
+    }
+    Ok(target.into())
+}
+
+fn check_bytes(n: usize) -> EResult<()> {
+    if n > MAX_TEXT { Err(EvalError::Fatal(crate::error::Fatal::TooLarge)) } else { Ok(()) }
+}
+
+fn more_pages(
+    fetch: &Fetch,
+    base: &str,
+    next: String,
+    headers: &[(String, String)],
+    initial: &[Rc<crate::value::Record>],
+) -> EResult<Vec<Rc<crate::value::Record>>> {
+    let mut next = resolve_url(base, &next).map_err(ds)?;
+    let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
+    let cells_of = |rows: &[Rc<crate::value::Record>]| rows.iter().fold(0usize, |n, r| n.saturating_add(r.names.len().max(1)));
+    let mut cells = cells_of(initial);
     for _ in 0..MAX_PAGES {
+        if !seen.insert(next.clone()) {
+            return raise("The OData feed repeats a page link.");
+        }
         let doc = fetch_json(fetch, &next, headers)?;
         let (rows, more) = feed_page(&doc)?;
+        check_len(out.len().saturating_add(initial.len()).saturating_add(rows.len()))?;
+        cells = cells.saturating_add(cells_of(&rows));
+        if cells > MAX_CELLS {
+            return Err(EvalError::Fatal(crate::error::Fatal::TooLarge));
+        }
         out.extend(rows);
-        check_len(out.len())?;
         match more {
-            Some(m) => next = m,
+            Some(m) => next = resolve_url(&next, &m).map_err(ds)?,
             None => return Ok(out),
         }
     }
@@ -300,7 +345,8 @@ fn feed_table(fetch: &Fetch, url: &str, headers: &[(String, String)]) -> EResult
     let doc = fetch_json(fetch, url, headers)?;
     let (mut rows, next) = feed_page(&doc)?;
     if let Some(next) = next {
-        rows.extend(more_pages(fetch, next, headers)?);
+        let more = more_pages(fetch, url, next, headers, &rows)?;
+        rows.extend(more);
     }
     Ok(Rc::new(records_table(rows)?))
 }
@@ -309,9 +355,10 @@ fn feed_table(fetch: &Fetch, url: &str, headers: &[(String, String)]) -> EResult
 /// (`@odata.…`, `__metadata`) left out.
 fn records_table(rows: Vec<Rc<crate::value::Record>>) -> EResult<Table> {
     let mut columns: Vec<Rc<str>> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for r in &rows {
         for n in r.names.iter() {
-            if !n.starts_with('@') && !n.starts_with("odata.") && &**n != "__metadata" && !columns.contains(n) {
+            if !n.starts_with('@') && !n.starts_with("odata.") && &**n != "__metadata" && seen.insert(n.clone()) {
                 columns.push(n.clone());
             }
         }

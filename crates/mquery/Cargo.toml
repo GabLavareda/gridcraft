@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 # XML.Document and Xml.Tables (pure Rust; already used by the xlsx crate).
 quick-xml = { workspace = true }
+url = { workspace = true }

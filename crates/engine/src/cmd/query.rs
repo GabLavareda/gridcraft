@@ -304,7 +304,7 @@ fn reload(s: &mut Session, q: &Query, formula: Option<&str>) -> Result<query::Lo
     edit(s, |cx| query::load(cx, sheet, at, &table, &grid).map_err(other))
 }
 
-fn set(s: &mut Session, p: &Json) -> Result<Json> {
+pub(super) fn set(s: &mut Session, p: &Json) -> Result<Json> {
     const C: &str = "data.query.set";
     let name = str_param(p, "name").ok_or_else(|| bad(C, "missing `name`"))?;
     let formula = checked_formula(C, p)?.map(str::to_string);
@@ -425,7 +425,7 @@ fn list(s: &mut Session, _: &Json) -> Result<Json> {
     Ok(Json::Array(out))
 }
 
-fn preview(s: &mut Session, p: &Json) -> Result<Json> {
+pub(super) fn preview(s: &mut Session, p: &Json) -> Result<Json> {
     const C: &str = "data.query.preview";
     let d = s.doc()?;
     let name = str_param(p, "name");

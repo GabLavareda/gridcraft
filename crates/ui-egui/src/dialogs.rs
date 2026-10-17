@@ -39,7 +39,7 @@ pub struct Dialog {
     picture_inbox: Option<crate::Inbox>,
     picture_target: Option<(u64, usize)>,
     /// The dialog this one was opened from (Name Manager › New…): it comes back when this closes.
-    back: Option<Box<Dialog>>,
+    pub(crate) back: Option<Box<Dialog>>,
 }
 
 impl Dialog {
@@ -775,6 +775,8 @@ impl Dialog {
             }
             "pickList" => Dialog::custom("pickList", "Pick From List", json!({})),
             "queryEditor" => Dialog::custom("queryEditor", "Query Editor", crate::query_editor::defaults(app, &params)?),
+            "fromSource" => Dialog::custom("fromSource", "Get Data", params.clone()),
+            "webAccess" => Dialog::custom("webAccess", "Allow Access", params.clone()),
             "fromDatabase" => Dialog::custom("fromDatabase", "From Database", crate::database_dialog::defaults(app, &params)),
             "nativeQuery" => Dialog::custom("nativeQuery", "Native Database Query", params.clone()),
             "saveCopy" => Dialog::custom("saveCopy", "Save a Copy", json!({"format": p("format")})),
@@ -1030,14 +1032,18 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
     let mut open = true;
     let mut win_open = true;
     let mut confirm = false;
+    let database_browser = d.name == "fromDatabase" && d.values.get("mode").and_then(Json::as_str) != Some("credentials");
+    let screen = ctx.content_rect();
     let width = match d.name.as_str() {
         "formatCells" => 560.0,
         "about" => 660.0,
         "insertFunction" | "commandSearch" | "nameManager" | "manageRules" | "journal" | "agents" | "macros" => 520.0,
         "recommendedCharts" => 600.0,
         "queryEditor" => 820.0,
+        "fromDatabase" if database_browser => 1240.0_f32.min((screen.width() - 48.0).max(320.0)),
         "fromDatabase" => 760.0,
         "nativeQuery" => 520.0,
+        "fromSource" | "webAccess" => 560.0,
         "analysisToolPak" => 420.0,
         "solver" => 460.0,
         _ => 380.0,
@@ -1049,9 +1055,24 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
         .default_width(width)
         .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, -40.0))
         .open(&mut win_open);
-    let window = if d.name == "insertPicture" { window.default_height(240.0) } else { window };
+    let window = if database_browser {
+        window
+            .id(egui::Id::new("database_browser_spacious"))
+            .resizable(true)
+            .default_height(800.0_f32.min((screen.height() - 80.0).max(360.0)))
+            .min_size(vec2(680.0_f32.min(screen.width() - 48.0), 460.0_f32.min(screen.height() - 80.0)))
+            .max_size(screen.size() - vec2(32.0, 32.0))
+            .frame(egui::Frame::window(&ctx.global_style()).inner_margin(16.0))
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+    } else if d.name == "insertPicture" {
+        window.default_height(240.0)
+    } else {
+        window
+    };
     window.show(ctx, |ui| {
-            ui.set_min_width(width - 20.0);
+            if !database_browser {
+                ui.set_min_width(width - 20.0);
+            }
             match d.name.as_str() {
                 "formatCells" => format_cells(app, ui, &mut d, &mut confirm),
                 "dataValidation" => data_validation_form(ui, &mut d, &mut confirm, &mut open),
@@ -1070,6 +1091,8 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                 "solverResults" => solver_results(app, ui, &mut d, &mut open),
                 "spelling" => spelling(app, ui, &mut d, &mut open),
                 "queryEditor" => crate::query_editor::show(app, ui, &mut d, &mut open),
+                "fromSource" => crate::source_dialog::show(app, ui, &mut d, &mut open),
+                "webAccess" => crate::source_dialog::approval(app, ui, &mut d, &mut open),
                 "fromDatabase" => crate::database_dialog::show(app, ui, &mut d, &mut open),
                 "nativeQuery" => crate::database_dialog::approval(app, ui, &mut d, &mut open),
                 "agents" => {

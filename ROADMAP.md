@@ -2,7 +2,7 @@
 
 **Stage: alpha** · next: beta, ~25 points of "ready for real work" and ~160–240 h away
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (queries: the M language, the Query Editor, databases) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-17 · **Change:** minor (queries: more sources, visual transformations, the database browser) · **Target:** Microsoft Excel (Microsoft 365)
 
 GridCraft aims at full Microsoft Excel parity, and at being better in places: faster, open (XLSX
 is the native format), fully scriptable by agents (MCP, control channel, CLI), and on the web.
@@ -132,6 +132,8 @@ Ranked; estimates in Opus 5.5 agent-hours. Detail and the full beta-gate list in
 
 | Date | What landed |
 |---|---|
+| 2026-10-17 | Queries: Get Data › More Sources (folder, XML, web page, JSON, OData) without writing M; 16 transformations and step rename/removal in the Query Editor; From Database browses tables and views with a live preview and edits an existing query's source ([power-query.md](docs/power-query.md)) |
+| 2026-10-16 | Queries: database logins can be remembered in the system's credential store (Windows, macOS, Linux/BSD Secret Service) |
 | 2026-10-15 | Queries read databases: SQL Server, PostgreSQL, MySQL/MariaDB and SQLite through Data › From Database (host, port, database, login, password), with logins kept for the session and native SQL run only once approved ([power-query.md](docs/power-query.md)) |
 | 2026-10-14 | Queries in the Power Query M language: kept in the workbook and its Data Mashup part, loaded to tables and refreshed; the Query Editor and the Queries & Connections pane |
 | 2026-10-12 | Rows auto-fit oversized fonts: opening a file and whole-row/column formatting grow non-custom rows to their tallest font (#833) |

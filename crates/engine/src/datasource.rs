@@ -81,10 +81,12 @@ pub enum Need {
 
 /// The site of a web address: its host (and port), in lower case, without the user name.
 pub fn url_host(url: &str) -> Option<String> {
-    let rest = url.trim().split_once("://")?.1;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h).to_lowercase();
-    (!host.is_empty()).then_some(host)
+    let url = url::Url::parse(url.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host()?.to_string();
+    Some(url.port().map_or_else(|| host.clone(), |p| format!("{host}:{p}")))
 }
 
 /// Where remembered logins live between sessions: the system's credential store, which the
@@ -146,7 +148,7 @@ impl DataSources {
 
     /// Lets queries read from this site (a host, or a web address) in this session.
     pub fn approve_web(&mut self, site: &str) -> Option<String> {
-        let host = if site.contains("://") { url_host(site)? } else { site.trim().to_lowercase() };
+        let host = url_host(&if site.contains("://") { site.to_string() } else { format!("https://{}", site.trim()) })?;
         if host.is_empty() {
             return None;
         }
@@ -435,16 +437,19 @@ impl<'a> Connector<'a> {
             return None;
         }
         let (hosts, needs) = (self.web_hosts.clone(), self.needs.clone());
-        Some(Rc::new(move |url: &str, headers: &[(String, String)]| {
-            let host = url_host(url).ok_or_else(|| format!("'{url}' isn't a web address."))?;
-            if !hosts.contains(&host) {
-                let need = Need::Web { host: host.clone() };
-                if !needs.borrow().contains(&need) {
-                    needs.borrow_mut().push(need);
+        Some(Rc::new(move |url: &str, headers: &[(String, String)], timeout| {
+            let authorize = |url: &str| {
+                let host = url_host(url).ok_or_else(|| format!("'{url}' isn't a web address."))?;
+                if !hosts.contains(&host) {
+                    let need = Need::Web { host: host.clone() };
+                    if !needs.borrow().contains(&need) {
+                        needs.borrow_mut().push(need);
+                    }
+                    return Err(format!("This query needs your permission to read from {host}."));
                 }
-                return Err(format!("This query needs your permission to read from {host}."));
-            }
-            http_get(url, headers)
+                Ok(())
+            };
+            http_get(url, headers, timeout, authorize)
         }))
     }
 
@@ -475,27 +480,66 @@ impl Drop for Connector<'_> {
 }
 
 /// Most bytes a web answer may have.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_WEB_BYTES: u64 = 256 << 20;
 
 /// Reads a web address (GET), following redirects, with a time limit and a size limit.
 #[cfg(not(target_arch = "wasm32"))]
-fn http_get(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>, String> {
+#[allow(clippy::disallowed_methods, reason = "Native-only HTTP uses a monotonic clock to bound the entire redirect chain.")]
+fn http_get(
+    url: &str,
+    headers: &[(String, String)],
+    timeout: std::time::Duration,
+    authorize: impl Fn(&str) -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
     let tls = native_tls::TlsConnector::new().map_err(|e| format!("Couldn't set up encryption: {e}"))?;
     let agent = ureq::AgentBuilder::new()
         .tls_connector(std::sync::Arc::new(tls))
         .timeout_connect(std::time::Duration::from_secs(30))
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(timeout)
+        .redirects(0)
         .user_agent("GridCraft")
         .build();
-    let mut request = agent.get(url);
-    for (k, v) in headers {
-        request = request.set(k, v);
+    let started = std::time::Instant::now();
+    let mut target = url::Url::parse(url).map_err(|e| e.to_string())?;
+    if !target.username().is_empty() || target.password().is_some() {
+        return Err("A web address must not contain a login.".into());
     }
-    let response = match request.call() {
-        Ok(r) => r,
-        Err(ureq::Error::Status(code, r)) => return Err(format!("The server answered {code} {} for {url}.", r.status_text())),
-        Err(e) => return Err(format!("Couldn't read {url}: {e}")),
+    let origin = target.origin();
+    let mut hops = 0;
+    let response = loop {
+        authorize(target.as_str())?;
+        let remaining = timeout.checked_sub(started.elapsed()).filter(|t| !t.is_zero()).ok_or("The web request timed out.")?;
+        let mut request = agent.get(target.as_str()).timeout(remaining);
+        for (k, v) in headers {
+            // API keys can be supplied under arbitrary header names.
+            if target.origin() == origin {
+                request = request.set(k, v);
+            }
+        }
+        let response = match request.call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, r)) => return Err(format!("The server answered {code} {} for {url}.", r.status_text())),
+            Err(e) => return Err(format!("Couldn't read {url}: {e}")),
+        };
+        if matches!(response.status(), 301 | 302 | 303 | 307 | 308) {
+            if hops >= 10 {
+                return Err("The web request has too many redirects.".into());
+            }
+            let location = response.header("Location").ok_or("The redirect has no Location header.")?;
+            let next = target.join(location).map_err(|e| e.to_string())?;
+            if target.scheme() == "https" && next.scheme() != "https" {
+                return Err("A secure web request redirected to an insecure address.".into());
+            }
+            if !next.username().is_empty() || next.password().is_some() {
+                return Err("A web address must not contain a login.".into());
+            }
+            target = next;
+            hops += 1;
+            continue;
+        }
+        break response;
     };
     let mut body = Vec::new();
     response.into_reader().take(MAX_WEB_BYTES + 1).read_to_end(&mut body).map_err(|e| format!("Couldn't read {url}: {e}"))?;
@@ -506,7 +550,7 @@ fn http_get(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>, String> 
 }
 
 #[cfg(target_arch = "wasm32")]
-fn http_get(url: &str, _: &[(String, String)]) -> Result<Vec<u8>, String> {
+fn http_get(url: &str, _: &[(String, String)], _: std::time::Duration, _: impl Fn(&str) -> Result<(), String>) -> Result<Vec<u8>, String> {
     Err(format!("The web version can't read {url} from a query."))
 }
 
@@ -595,7 +639,7 @@ mod tests {
         assert!(s.is_web_approved("api.example.com") && !s.is_web_approved("other.example.com"));
         let c = Connector::new(&s);
         let fetch = c.web().unwrap();
-        let e = fetch("https://other.example.com/x", &[]).unwrap_err();
+        let e = fetch("https://other.example.com/x", &[], std::time::Duration::from_secs(1)).unwrap_err();
         assert!(e.contains("needs your permission to read from other.example.com"), "{e}");
         drop(fetch);
         drop(c);
