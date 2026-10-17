@@ -263,11 +263,84 @@ impl mq::Host for WorkbookHost<'_> {
         self.databases.database(source)
     }
 
+    fn web(&self) -> Option<mq::Fetch> {
+        self.databases.web()
+    }
+
+    fn folder_files(&self, path: &str) -> Result<Vec<mq::FileEntry>, String> {
+        folder_files(path)
+    }
+
     /// The clock in UTC: like `NOW()`, since the local offset isn't known without platform calls.
     fn now(&self) -> Option<mq::Now> {
         let ms = gridcraft_core::date::unix_now_ms()?;
         Some(mq::Now { local_ticks: (ms * 10_000.0) as i64, offset_minutes: 0 })
     }
+}
+
+/// Most files `Folder.Files` lists, and the deepest subfolder it goes into.
+const MAX_FOLDER_FILES: usize = 100_000;
+const MAX_FOLDER_DEPTH: usize = 64;
+
+/// The files under `path`, subfolders included, sorted by path. Their contents are read when a
+/// query reads them.
+#[cfg(not(target_arch = "wasm32"))]
+fn folder_files(path: &str) -> Result<Vec<mq::FileEntry>, String> {
+    use std::time::UNIX_EPOCH;
+    let root = std::path::Path::new(path.trim());
+    if !root.is_dir() {
+        return Err(format!("There is no folder '{path}'."));
+    }
+    let ticks = |t: std::io::Result<std::time::SystemTime>| -> Option<i64> {
+        let d = t.ok()?.duration_since(UNIX_EPOCH).ok()?;
+        i64::try_from(d.as_nanos() / 100).ok()
+    };
+    let mut out = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).map_err(|e| format!("The folder '{}' can't be read: {e}", dir.display()))?;
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                if depth < MAX_FOLDER_DEPTH {
+                    stack.push((p, depth + 1));
+                }
+                continue;
+            }
+            if out.len() >= MAX_FOLDER_FILES {
+                return Err(format!("The folder '{path}' has more than {MAX_FOLDER_FILES} files."));
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            #[cfg(windows)]
+            let hidden = std::os::windows::fs::MetadataExt::file_attributes(&meta) & 0x2 != 0;
+            #[cfg(not(windows))]
+            let hidden = name.starts_with('.');
+            let mut folder = dir.to_string_lossy().into_owned();
+            if !folder.ends_with(std::path::MAIN_SEPARATOR) {
+                folder.push(std::path::MAIN_SEPARATOR);
+            }
+            let full = p.to_string_lossy().into_owned();
+            out.push(mq::FileEntry {
+                name,
+                folder,
+                size: meta.len(),
+                accessed: ticks(meta.accessed()),
+                modified: ticks(meta.modified()),
+                created: ticks(meta.created()),
+                hidden,
+                read_only: meta.permissions().readonly(),
+                content: Rc::new(move || crate::io::read_file(&full).map_err(|e| format!("The file '{full}' can't be read: {e}"))),
+            });
+        }
+    }
+    out.sort_by(|a, b| (a.folder.as_str(), a.name.as_str()).cmp(&(b.folder.as_str(), b.name.as_str())));
+    Ok(out)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn folder_files(path: &str) -> Result<Vec<mq::FileEntry>, String> {
+    Err(format!("The web version can't read the folder '{path}'."))
 }
 
 // ---------------------------------------------------------------- evaluating

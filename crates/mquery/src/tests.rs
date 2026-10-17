@@ -1182,3 +1182,138 @@ fn lazy_cells_print_without_reading_and_cannot_read_themselves() {
     assert!(lazy.force().is_err());
     me.borrow_mut().take();
 }
+
+// ---------------------------------------------------------------- folders, XML, the web
+
+/// A host with a folder of two files and a web of canned answers; it logs what it reads.
+#[derive(Default)]
+struct SourcesHost {
+    log: Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl Host for SourcesHost {
+    fn folder_files(&self, path: &str) -> Result<Vec<crate::FileEntry>, String> {
+        if path != "C:\\data" {
+            return Err(format!("There is no folder '{path}'."));
+        }
+        let file = |name: &str, body: &'static str| {
+            let log = self.log.clone();
+            let n = name.to_string();
+            crate::FileEntry {
+                name: name.into(),
+                folder: "C:\\data\\".into(),
+                size: body.len() as u64,
+                accessed: None,
+                modified: Some(20468 * 864_000_000_000),
+                created: None,
+                hidden: false,
+                read_only: false,
+                content: Rc::new(move || {
+                    log.borrow_mut().push(format!("read {n}"));
+                    Ok(body.as_bytes().to_vec())
+                }),
+            }
+        };
+        Ok(vec![file("a.csv", "x,y\n1,2"), file("notes", "hello")])
+    }
+    fn web(&self) -> Option<crate::Fetch> {
+        let log = self.log.clone();
+        Some(Rc::new(move |url: &str, headers: &[(String, String)]| {
+            log.borrow_mut().push(format!("GET {url} {headers:?}"));
+            let body = match url {
+                "https://svc.test/odata/" | "https://svc.test/odata" => r#"{"value": [{"name": "People", "kind": "EntitySet", "url": "People"}]}"#,
+                "https://svc.test/odata/People" => {
+                    r#"{"value": [{"Id": 1, "Name": "Ana"}], "@odata.nextLink": "https://svc.test/odata/People?page=2"}"#
+                }
+                "https://svc.test/odata/People?page=2" => r#"{"value": [{"Id": 2, "Name": "Bo", "@odata.etag": "x"}]}"#,
+                u if u.starts_with("https://api.test/") => r#"{"ok": true}"#,
+                _ => return Err(format!("404 for {url}")),
+            };
+            Ok(body.as_bytes().to_vec())
+        }))
+    }
+}
+
+#[test]
+fn xml_documents_and_tables() {
+    let x = r#"<root xmlns:p="urn:p"><item id="1"><a>1</a><b>x &amp; y</b></item><item id="2"><a>2</a><b><![CDATA[<z>]]></b></item><meta><v>9</v><v>10</v></meta></root>"#;
+    let q = |e: &str| run(&e.replace("@X", &crate::quote_text(x)));
+    assert_eq!(q("Xml.Tables(@X)[Name]"), r#"{"item", "meta"}"#);
+    assert_eq!(q("Xml.Tables(@X){0}[Table]"), r#"#table({"Attribute:id", "a", "b"}, {{"1", "1", "x & y"}, {"2", "2", "<z>"}})"#);
+    // Repeated children make a table of their own.
+    assert_eq!(q("Xml.Tables(@X){1}[Table]{0}[v]"), r#"#table({"Element:Text"}, {{"9"}, {"10"}})"#);
+    assert_eq!(q("Xml.Document(@X){0}[Name]"), r#""root""#);
+    assert_eq!(q("Xml.Document(@X){0}[Value]{0}[Attributes]{0}[Value]"), r#""1""#);
+    assert_eq!(q("Xml.Document(@X){0}[Value]{0}[Value]{1}[Value]"), r#""x & y""#);
+    // Binary content works like text.
+    assert_eq!(q("Table.RowCount(Xml.Tables(Text.ToBinary(@X)))"), "2");
+    // Entity tricks and broken documents are errors, not crashes.
+    let laughs = r#"<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;">]><lolz>&lol2;</lolz>"#;
+    assert!(run(&format!("Xml.Document({})", crate::quote_text(laughs))).starts_with("ERROR"));
+    assert!(run(r#"Xml.Tables("<a><b></a>")"#).starts_with("ERROR"));
+    assert!(run(r#"Xml.Tables("<a/><b/>")"#).starts_with("ERROR"));
+    let deep = format!("{}{}", "<a>".repeat(5000), "</a>".repeat(5000));
+    assert!(run(&format!("Xml.Document({})", crate::quote_text(&deep))).starts_with("ERROR"));
+}
+
+#[test]
+fn html_tables_of_a_page() {
+    let html = r#"<html><head><script>var s = "<table><tr><td>no</td></tr></table>";</script></head><body>
+        <table class="data" id="t1"><caption>Vendas &amp; metas</caption>
+          <tr><th>Região</th><th>Q1</th><th>Q2</th></tr>
+          <tr><td rowspan="2">Norte</td><td>1</td><td>2</td>
+          <tr><td>3</td><td>4</td></tr>
+          <tr><td colspan="2">Total&nbsp;geral</td><td>10</td></tr>
+        </table>
+        <!-- <table><tr><td>hidden</td></tr></table> -->
+        <table><tr><td>a<br>b</td><td><table><tr><td>inner</td></tr></table></td></tr></table>
+        </body></html>"#;
+    let q = |e: &str| run(&e.replace("@H", &crate::quote_text(html)));
+    assert_eq!(q("Table.RowCount(Web.Page(@H))"), "3");
+    assert_eq!(q("Web.Page(@H){0}[Caption]"), r#""Vendas & metas""#);
+    assert_eq!(q("{Web.Page(@H){0}[ClassName], Web.Page(@H){0}[Id]}"), r#"{"data", "t1"}"#);
+    assert_eq!(
+        q("Web.Page(@H){0}[Data]"),
+        r#"#table({"Região", "Q1", "Q2"}, {{"Norte", "1", "2"}, {"Norte", "3", "4"}, {"Total geral", "Total geral", "10"}})"#
+    );
+    assert_eq!(q("Web.Page(@H){1}[Data]{0}[Column1]"), r#""a b""#);
+    assert_eq!(q("Web.Page(@H){2}[Data]"), r#"#table({"Column1"}, {{"inner"}})"#);
+    assert_eq!(run(r#"Table.RowCount(Web.Page("no tables here"))"#), "0");
+    assert!(run(&format!("Web.Page({})", crate::quote_text(&"<table>".repeat(1000)))).starts_with("ERROR"));
+}
+
+#[test]
+fn folder_files_are_read_when_opened() {
+    let host = SourcesHost::default();
+    let src = r#"Table.SelectColumns(Folder.Files("C:\data"), {"Name", "Extension", "Folder Path"})"#;
+    assert_eq!(run_with(&host, src), r#"#table({"Name", "Extension", "Folder Path"}, {{"a.csv", ".csv", "C:\data\"}, {"notes", "", "C:\data\"}})"#);
+    assert!(host.log.borrow().is_empty(), "listing reads no file");
+    let csv = r#"Table.PromoteHeaders(Csv.Document(Folder.Files("C:\data"){[Name = "a.csv"]}[Content]))"#;
+    assert_eq!(run_with(&host, csv), r#"#table({"x", "y"}, {{"1", "2"}})"#);
+    assert_eq!(*host.log.borrow(), vec!["read a.csv"]);
+    assert_eq!(run_with(&host, r#"Folder.Files("C:\data"){0}[Attributes][Size]"#), "7");
+    assert!(run_with(&host, r#"Folder.Files("Z:\none")"#).contains("There is no folder"));
+    assert!(run(r#"Folder.Files("C:\data")"#).contains("Reading folders isn't available here"));
+}
+
+#[test]
+fn web_contents_and_odata_feeds() {
+    let host = SourcesHost::default();
+    let get = r#"Json.Document(Web.Contents("https://api.test/v1", [RelativePath = "/items", Query = [q = "a b&c", n = "2"], Headers = [#"X-Key" = "k"]]))"#;
+    assert_eq!(run_with(&host, get), "[ok = true]");
+    assert_eq!(host.log.borrow().last().map(String::as_str), Some(r#"GET https://api.test/v1/items?q=a%20b%26c&n=2 [("X-Key", "k")]"#));
+    assert!(run_with(&host, r#"Web.Contents("ftp://x")"#).contains("isn't a web address"));
+    assert!(run_with(&host, r#"Web.Contents("https://api.test", [Content = Text.ToBinary("x")])"#).contains("only reads"));
+    assert!(run(r#"Web.Contents("https://api.test")"#).contains("Reading from the web isn't available here"));
+    assert!(run_with(&host, r#"Web.Contents("https://nowhere.test/")"#).contains("404"));
+
+    // A service document lists entity sets; a set is read, page after page, when opened.
+    host.log.borrow_mut().clear();
+    assert_eq!(run_with(&host, r#"OData.Feed("https://svc.test/odata")[Name]"#), r#"{"People"}"#);
+    assert_eq!(host.log.borrow().len(), 1, "listing reads no entity set");
+    assert_eq!(
+        run_with(&host, r#"OData.Feed("https://svc.test/odata"){[Name = "People"]}[Data]"#),
+        r#"#table({"Id", "Name"}, {{1, "Ana"}, {2, "Bo"}})"#
+    );
+    assert_eq!(run_with(&host, r#"Table.RowCount(OData.Feed("https://svc.test/odata/People"))"#), "2");
+}

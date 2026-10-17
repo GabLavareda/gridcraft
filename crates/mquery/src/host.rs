@@ -14,6 +14,26 @@ pub struct WorkbookPart {
     pub hidden: bool,
 }
 
+/// One file under a folder, as `Folder.Files` lists it. Its content is read only when a query
+/// reads it.
+pub struct FileEntry {
+    pub name: String,
+    /// The folder it is in, ending with the path separator.
+    pub folder: String,
+    pub size: u64,
+    /// Ticks since 1970-01-01T00:00, when the system tells.
+    pub accessed: Option<i64>,
+    pub modified: Option<i64>,
+    pub created: Option<i64>,
+    pub hidden: bool,
+    pub read_only: bool,
+    pub content: Rc<dyn Fn() -> Result<Vec<u8>, String>>,
+}
+
+/// Reads a web address (GET) with these headers: the body, or why not. `'static`, so that values
+/// read later (the entity sets of an OData service) can keep it.
+pub type Fetch = Rc<dyn Fn(&str, &[(String, String)]) -> Result<Vec<u8>, String>>;
+
 /// The current moment: local ticks since 1970-01-01T00:00 and the offset from UTC in minutes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Now {
@@ -67,9 +87,13 @@ pub trait Host {
     fn file_contents(&self, path: &str) -> Result<Vec<u8>, String> {
         Err(format!("Reading files isn't available here ({path})."))
     }
-    /// `Web.Contents(url)`.
-    fn web_contents(&self, url: &str) -> Result<Vec<u8>, String> {
-        Err(format!("Reading from the web isn't available here ({url})."))
+    /// `Web.Contents`, `OData.Feed`: what reads the web, or `None` to refuse.
+    fn web(&self) -> Option<Fetch> {
+        None
+    }
+    /// `Folder.Files(path)`: the files under a folder, its subfolders included.
+    fn folder_files(&self, path: &str) -> Result<Vec<FileEntry>, String> {
+        Err(format!("Reading folders isn't available here ({path})."))
     }
     /// `Excel.Workbook(binary)`: the sheets, tables and named ranges of a workbook file.
     fn excel_workbook(&self, _bytes: &[u8], _use_headers: bool) -> Result<Vec<WorkbookPart>, String> {

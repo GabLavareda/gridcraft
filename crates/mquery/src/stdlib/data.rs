@@ -12,7 +12,6 @@ pub(crate) const FNS: &[Builtin] = builtin_table![
     "Excel.CurrentWorkbook", 0, 0, current_workbook;
     "Excel.Workbook", 1, 3, excel_workbook;
     "File.Contents", 1, 2, |it, a| source(it.host.file_contents(&text(a, 0)?));
-    "Web.Contents", 1, 2, |it, a| source(it.host.web_contents(&text(a, 0)?));
     "Csv.Document", 1, 5, csv_document;
     "Json.Document", 1, 2, |_, a| json::parse(&text_of(arg(a, 0), opt_number(a, 1)?)?);
     "Json.FromValue", 1, 2, json_from_value;

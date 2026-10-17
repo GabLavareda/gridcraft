@@ -30,6 +30,11 @@ image = { workspace = true }
 gridcraft-xlsx = { workspace = true, features = ["test-support"] }
 zip = { workspace = true }
 
+# `Web.Contents` and `OData.Feed`, for sites the user allowed (not in the web build).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "2.12", default-features = false, features = ["native-tls", "gzip"] }
+native-tls = "0.2"
+
 # Tests make SQLite files to read (the engine itself only reads them, through gridcraft-db).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }

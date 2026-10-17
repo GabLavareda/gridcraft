@@ -12,6 +12,9 @@
 //! SQL written into a query (`[Query = "…"]`, `Value.NativeQuery`) can change a database, so it
 //! runs only once the user approved that exact text for that database, as Excel asks. Reading
 //! tables through a navigation table needs no approval: it only selects.
+//!
+//! The web (`Web.Contents`, `OData.Feed`) is reached only for sites the user allowed in this
+//! session: a workbook from elsewhere can't send what it reads to a site of its choosing.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -72,6 +75,16 @@ pub enum Need {
     Credentials { kind: Kind, server: String, database: String },
     /// The user's approval to run this SQL on this database.
     Approval { kind: Kind, server: String, database: String, query: String },
+    /// The user's permission to read from this site (`host` or `host:port`).
+    Web { host: String },
+}
+
+/// The site of a web address: its host (and port), in lower case, without the user name.
+pub fn url_host(url: &str) -> Option<String> {
+    let rest = url.trim().split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h).to_lowercase();
+    (!host.is_empty()).then_some(host)
 }
 
 /// Where remembered logins live between sessions: the system's credential store, which the
@@ -96,6 +109,8 @@ pub struct DataSources {
     store: Option<Box<dyn LoginStore>>,
     /// The servers whose login the store keeps (`kind:host:port`).
     remembered: HashSet<String>,
+    /// The sites queries may read from in this session.
+    web_hosts: HashSet<String>,
 }
 
 /// The key a remembered login goes by: kind, host (lower case) and port.
@@ -127,6 +142,20 @@ impl DataSources {
             }
         }
         Ok(n)
+    }
+
+    /// Lets queries read from this site (a host, or a web address) in this session.
+    pub fn approve_web(&mut self, site: &str) -> Option<String> {
+        let host = if site.contains("://") { url_host(site)? } else { site.trim().to_lowercase() };
+        if host.is_empty() {
+            return None;
+        }
+        self.web_hosts.insert(host.clone());
+        Some(host)
+    }
+
+    pub fn is_web_approved(&self, host: &str) -> bool {
+        self.web_hosts.contains(&host.to_lowercase())
     }
 
     /// Whether logins can be remembered from one session to the next.
@@ -385,11 +414,38 @@ pub(crate) struct Connector<'a> {
     approved: Rc<HashSet<String>>,
     open: RefCell<HashMap<mq::DataSource, Rc<dyn mq::Database>>>,
     needs: Rc<RefCell<Vec<Need>>>,
+    web_hosts: Rc<HashSet<String>>,
 }
 
 impl<'a> Connector<'a> {
     pub(crate) fn new(sources: &'a DataSources) -> Connector<'a> {
-        Connector { sources, approved: Rc::new(sources.approved.clone()), open: RefCell::default(), needs: Rc::default() }
+        Connector {
+            sources,
+            approved: Rc::new(sources.approved.clone()),
+            open: RefCell::default(),
+            needs: Rc::default(),
+            web_hosts: Rc::new(sources.web_hosts.clone()),
+        }
+    }
+
+    /// What reads the web for this evaluation: only sites the user allowed; another site is
+    /// noted as a need and refused.
+    pub(crate) fn web(&self) -> Option<mq::Fetch> {
+        if cfg!(target_arch = "wasm32") {
+            return None;
+        }
+        let (hosts, needs) = (self.web_hosts.clone(), self.needs.clone());
+        Some(Rc::new(move |url: &str, headers: &[(String, String)]| {
+            let host = url_host(url).ok_or_else(|| format!("'{url}' isn't a web address."))?;
+            if !hosts.contains(&host) {
+                let need = Need::Web { host: host.clone() };
+                if !needs.borrow().contains(&need) {
+                    needs.borrow_mut().push(need);
+                }
+                return Err(format!("This query needs your permission to read from {host}."));
+            }
+            http_get(url, headers)
+        }))
     }
 
     pub(crate) fn database(&self, source: &mq::DataSource) -> Result<Rc<dyn mq::Database>, String> {
@@ -416,6 +472,42 @@ impl Drop for Connector<'_> {
         let needs = std::mem::take(&mut *self.needs.borrow_mut());
         self.sources.note(needs);
     }
+}
+
+/// Most bytes a web answer may have.
+const MAX_WEB_BYTES: u64 = 256 << 20;
+
+/// Reads a web address (GET), following redirects, with a time limit and a size limit.
+#[cfg(not(target_arch = "wasm32"))]
+fn http_get(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let tls = native_tls::TlsConnector::new().map_err(|e| format!("Couldn't set up encryption: {e}"))?;
+    let agent = ureq::AgentBuilder::new()
+        .tls_connector(std::sync::Arc::new(tls))
+        .timeout_connect(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(300))
+        .user_agent("GridCraft")
+        .build();
+    let mut request = agent.get(url);
+    for (k, v) in headers {
+        request = request.set(k, v);
+    }
+    let response = match request.call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, r)) => return Err(format!("The server answered {code} {} for {url}.", r.status_text())),
+        Err(e) => return Err(format!("Couldn't read {url}: {e}")),
+    };
+    let mut body = Vec::new();
+    response.into_reader().take(MAX_WEB_BYTES + 1).read_to_end(&mut body).map_err(|e| format!("Couldn't read {url}: {e}"))?;
+    if body.len() as u64 > MAX_WEB_BYTES {
+        return Err(format!("The answer from {url} is larger than {} MB.", MAX_WEB_BYTES >> 20));
+    }
+    Ok(body)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn http_get(url: &str, _: &[(String, String)]) -> Result<Vec<u8>, String> {
+    Err(format!("The web version can't read {url} from a query."))
 }
 
 #[cfg(test)]
@@ -491,6 +583,23 @@ mod tests {
         next.remember(login(Kind::SqlServer, "db", None, "d")).unwrap();
         assert_eq!(next.remove(Some(Kind::SqlServer), None), 1);
         assert!(store.0.lock().unwrap().is_empty() && !next.is_remembered(Kind::SqlServer, "db", None));
+    }
+
+    #[test]
+    fn sites_are_allowed_one_by_one() {
+        assert_eq!(url_host("https://User:pw@Api.Example.com:8443/v1?q=1"), Some("api.example.com:8443".into()));
+        assert_eq!(url_host("http://x.test"), Some("x.test".into()));
+        assert_eq!(url_host("no scheme"), None);
+        let mut s = DataSources::default();
+        assert_eq!(s.approve_web("https://Api.Example.com/a"), Some("api.example.com".into()));
+        assert!(s.is_web_approved("api.example.com") && !s.is_web_approved("other.example.com"));
+        let c = Connector::new(&s);
+        let fetch = c.web().unwrap();
+        let e = fetch("https://other.example.com/x", &[]).unwrap_err();
+        assert!(e.contains("needs your permission to read from other.example.com"), "{e}");
+        drop(fetch);
+        drop(c);
+        assert_eq!(s.take_needs(), vec![Need::Web { host: "other.example.com".into() }]);
     }
 
     #[test]

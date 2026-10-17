@@ -83,11 +83,20 @@ pub fn specs() -> Vec<CommandSpec> {
             approve
         ),
         cmd!(
+            query "data.web.approve",
+            "Allow Access",
+            [],
+            None,
+            "{site: a host (\"api.example.com\") or a web address} lets queries read from that site in this session → {site}",
+            always,
+            approve_web
+        ),
+        cmd!(
             query "data.database.needs",
             "Needs",
             [],
             None,
-            "{} → what queries were refused for since the last call: [{need: \"credentials\", kind, server, database} | {need: \"approval\", kind, server, database, query}]",
+            "{} → what queries were refused for since the last call: [{need: \"credentials\", kind, server, database} | {need: \"approval\", kind, server, database, query} | {need: \"web\", site}]",
             always,
             needs
         ),
@@ -367,6 +376,13 @@ fn approve(s: &mut Session, p: &Json) -> Result<Json> {
     Ok(json!({"approved": true}))
 }
 
+fn approve_web(s: &mut Session, p: &Json) -> Result<Json> {
+    const C: &str = "data.web.approve";
+    let site = str_param(p, "site").or_else(|| str_param(p, "url")).or_else(|| str_param(p, "host")).ok_or_else(|| bad(C, "missing `site`"))?;
+    let host = s.data_sources.approve_web(site).ok_or_else(|| bad(C, "`site` is a host or a web address"))?;
+    Ok(json!({"site": host}))
+}
+
 fn needs(s: &mut Session, _: &Json) -> Result<Json> {
     Ok(s.data_sources
         .take_needs()
@@ -376,6 +392,7 @@ fn needs(s: &mut Session, _: &Json) -> Result<Json> {
             Need::Approval { kind, server, database, query } => {
                 json!({"need": "approval", "kind": kind.id(), "server": server, "database": database, "query": query})
             }
+            Need::Web { host } => json!({"need": "web", "site": host}),
         })
         .collect())
 }
@@ -564,6 +581,72 @@ mod tests {
         // Whatever the SQL holds, the formula parses.
         let odd = f(Kind::MySql, "m", "d", "d", None, Some("select \"x\" -- \r\n from t"));
         assert!(gridcraft_mquery::parse(&odd).is_ok(), "{odd}");
+    }
+
+    /// Serves `count` HTTP requests on 127.0.0.1 with fixed answers by path; returns the base URL.
+    fn serve(count: usize) -> String {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(count) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (status, kind, body) = match path.as_str() {
+                    "/data.json" => ("200 OK", "application/json", r#"[{"id": 1, "nome": "Ana"}, {"id": 2, "nome": "Bo"}]"#.to_string()),
+                    "/page.html" => ("200 OK", "text/html", "<table><tr><th>a</th></tr><tr><td>1</td></tr></table>".to_string()),
+                    _ => ("404 Not Found", "text/plain", "no".to_string()),
+                };
+                let reply = format!("HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn the_web_is_read_from_allowed_sites_only() {
+        let base = serve(4);
+        let mut s = session();
+        let formula = format!("Table.FromRecords(Json.Document(Web.Contents({})))", gridcraft_mquery::quote_text(&format!("{base}/data.json")));
+        let site = base.trim_start_matches("http://").to_string();
+        // Not allowed yet: refused, and the site is what the interface asks about.
+        let e = s.execute("data.query.preview", json!({"formula": formula})).unwrap_err().to_string();
+        assert!(e.contains("needs your permission to read from"), "{e}");
+        assert_eq!(s.execute("data.database.needs", json!({})).unwrap(), json!([{"need": "web", "site": site}]));
+        assert_eq!(s.execute("data.web.approve", json!({"site": format!("{base}/anything")})).unwrap(), json!({"site": site}));
+        let p = s.execute("data.query.preview", json!({"formula": formula})).unwrap();
+        assert_eq!(p["rows"], json!([[1.0, "Ana"], [2.0, "Bo"]]));
+        let page = format!("Web.Page(Web.Contents({})){{0}}[Data]", gridcraft_mquery::quote_text(&format!("{base}/page.html")));
+        assert_eq!(s.execute("data.query.preview", json!({"formula": page})).unwrap()["rows"], json!([["1"]]));
+        let missing = format!("Web.Contents({})", gridcraft_mquery::quote_text(&format!("{base}/nothing")));
+        let e = s.execute("data.query.preview", json!({"formula": missing})).unwrap_err().to_string();
+        assert!(e.contains("404"), "{e}");
+    }
+
+    #[test]
+    fn folders_list_their_files() {
+        let dir = std::env::temp_dir().join(format!("gridcraft-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.csv"), "x,y\n1,2\n").unwrap();
+        std::fs::write(dir.join("sub").join("b.csv"), "x,y\n3,4\n").unwrap();
+        let mut s = session();
+        let path = gridcraft_mquery::quote_text(&dir.to_string_lossy());
+        let combined = format!(
+            "let Files = Folder.Files({path}), Csvs = Table.SelectRows(Files, each [Extension] = \".csv\"), \
+             Tables = List.Transform(Csvs[Content], each Table.PromoteHeaders(Csv.Document(_))) in Table.Combine(Tables)"
+        );
+        let p = s.execute("data.query.preview", json!({"formula": combined})).unwrap();
+        assert_eq!(p["rows"], json!([["1", "2"], ["3", "4"]]));
+        let names = format!("Folder.Files({path})[Name]");
+        assert_eq!(s.execute("data.query.preview", json!({"formula": names})).unwrap()["rows"], json!([["a.csv"], ["b.csv"]]));
+        let _ = std::fs::remove_dir_all(&dir);
+        let gone = s.execute("data.query.preview", json!({"formula": format!("Folder.Files({path})")})).unwrap_err().to_string();
+        assert!(gone.contains("There is no folder"), "{gone}");
     }
 
     // ------------------------------------------------------------ servers

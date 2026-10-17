@@ -15,6 +15,7 @@ pub(crate) mod list;
 pub(crate) mod misc;
 pub(crate) mod number;
 pub(crate) mod record;
+pub(crate) mod sources;
 pub(crate) mod splitter;
 pub(crate) mod table;
 pub(crate) mod table_shape;
@@ -29,9 +30,22 @@ macro_rules! builtin_table {
 pub(crate) use builtin_table;
 
 pub(crate) fn builtins() -> impl Iterator<Item = &'static Builtin> {
-    [text::FNS, number::FNS, list::FNS, record::FNS, table::FNS, table_shape::FNS, date::FNS, misc::FNS, data::FNS, database::FNS, splitter::FNS]
-        .into_iter()
-        .flatten()
+    [
+        text::FNS,
+        number::FNS,
+        list::FNS,
+        record::FNS,
+        table::FNS,
+        table_shape::FNS,
+        date::FNS,
+        misc::FNS,
+        data::FNS,
+        database::FNS,
+        sources::FNS,
+        splitter::FNS,
+    ]
+    .into_iter()
+    .flatten()
 }
 
 fn num(n: f64) -> Value {
