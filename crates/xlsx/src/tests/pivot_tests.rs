@@ -80,7 +80,8 @@ fn workbook() -> Workbook {
     wb.names.push(DefinedName { name: "SalesData".into(), scope: None, formula: "Data!$A$1:$F$9".into(), comment: String::new(), hidden: false });
 
     let mut report = Sheet::new("Report");
-    // Pivot 1: tabular, page filter, custom and built-in value formats, collapsed item.
+    // Pivot 1: tabular, page filter, custom and built-in value formats, collapsed item, Enable
+    // show details off.
     let p1 = PivotTable {
         id: 1,
         name: "Sales by Region".into(),
@@ -106,6 +107,7 @@ fn workbook() -> Workbook {
         ],
         filters: vec![PivotFilter { source_col: "Channel".into(), selected: Some(vec!["Online".into()]) }],
         layout: PivotLayout::Tabular,
+        enable_show_details: false,
         grand_totals_rows: false,
         grand_totals_cols: true,
         subtotals: false,
@@ -165,6 +167,7 @@ fn workbook() -> Workbook {
             PivotFilter { source_col: "Product".into(), selected: Some(vec!["A".into(), "B".into()]) },
         ],
         layout: PivotLayout::Outline,
+        enable_show_details: true,
         grand_totals_rows: true,
         grand_totals_cols: false,
         subtotals: true,
@@ -663,6 +666,24 @@ fn grand_totals_read_in_excel_direction() {
     }
 }
 
+// `enableDrill="0"` is PivotTable Options › Data › Enable show details turned off; without the
+// attribute the option is on.
+#[test]
+fn enable_show_details_reads_and_writes_enable_drill() {
+    let table = |attr: &str| {
+        format!(
+            r#"<pivotTableDefinition name="Drill" cacheId="1" {attr}><location ref="C1:F4"/><pivotFields><pivotField axis="axisRow"><items><item x="0"/><item x="1"/><item t="default"/></items></pivotField><pivotField dataField="1"/></pivotFields><rowFields><field x="0"/></rowFields><dataFields><dataField name="Sum of V" fld="1"/></dataFields></pivotTableDefinition>"#
+        )
+    };
+    for (attr, on) in [("enableDrill=\"0\"", false), ("enableDrill=\"1\"", true), ("", true)] {
+        let (wb, _) = read_xlsx(&with_pivot(&table(attr), Some(GOOD_CACHE))).unwrap();
+        assert_eq!(wb.sheet(0).unwrap().pivots[0].enable_show_details, on, "{attr}");
+        let parts = unzip(&write_xlsx(&wb).unwrap());
+        let written = String::from_utf8(parts.get("xl/pivotTables/pivotTable1.xml").unwrap().clone()).unwrap();
+        assert_eq!(written.contains(" enableDrill=\"0\""), !on, "{attr}: {written}");
+    }
+}
+
 #[test]
 fn data_on_rows_with_one_value_field_reads_without_warning() {
     let table = r#"<pivotTableDefinition name="OneValue" cacheId="1" dataOnRows="1"><location ref="C1:D4"/><pivotFields><pivotField axis="axisRow"><items><item x="0"/><item x="1"/><item t="default"/></items></pivotField><pivotField dataField="1"/></pivotFields><rowFields><field x="0"/></rowFields><dataFields><dataField name="Total" fld="1"/></dataFields></pivotTableDefinition>"#;
@@ -673,4 +694,54 @@ fn data_on_rows_with_one_value_field_reads_without_warning() {
     assert_eq!(pt.values_position, None);
     let (back, _) = read_xlsx(&write_xlsx(&wb).unwrap()).unwrap();
     assert!(back.sheet(0).unwrap().pivots[0].values_on_rows);
+}
+
+/// A one-sheet-of-data workbook with a pivot on "Report": `columns` are the source columns
+/// (header, values), `pt` the pivot built on `Data!A1:<last>`.
+fn small_pivot(columns: &[(&str, Vec<Value>)], pt: impl FnOnce(&mut PivotTable)) -> HashMap<String, String> {
+    let mut wb = Workbook::new();
+    let data = wb.sheet_mut(0).unwrap();
+    data.name = "Data".into();
+    let mut rows = 0;
+    for (c, (h, vals)) in columns.iter().enumerate() {
+        data.cells.set(CellRef::new(0, c as u32), Cell::value(Value::text(*h)));
+        for (r, v) in vals.iter().enumerate() {
+            if *v != Value::Empty {
+                data.cells.set(CellRef::new(r as u32 + 1, c as u32), Cell::value(v.clone()));
+            }
+        }
+        rows = rows.max(vals.len());
+    }
+    let last = format!("{}{}", gridcraft_core::col_to_letters(columns.len() as u32 - 1), rows + 1);
+    let mut table = PivotTable { id: 1, name: "PT".into(), source: format!("Data!$A$1:{last}"), anchor: at("A3"), ..PivotTable::default() };
+    pt(&mut table);
+    let mut report = Sheet::new("Report");
+    report.pivots = vec![table];
+    wb.sheets.push(Arc::new(report));
+    unzip(&write_xlsx(&wb).unwrap()).into_iter().map(|(k, v)| (k, String::from_utf8_lossy(&v).into_owned())).collect()
+}
+
+/// #1447: two value fields and no column field: Excel 365 adds a `Values` row unless told not to.
+#[test]
+fn two_value_fields_without_columns_hide_the_values_row() {
+    let cols = [
+        ("Region", vec![Value::text("East"), Value::text("West"), Value::text("East")]),
+        ("Sales", vec![Value::number(10.0), Value::number(20.0), Value::number(5.0)]),
+        ("Qty", vec![Value::number(1.0), Value::number(2.0), Value::number(3.0)]),
+    ];
+    let value = |c: &str| PivotValue { source_col: c.into(), name: format!("Sum of {c}"), ..PivotValue::default() };
+    let two = small_pivot(&cols, |p| {
+        p.rows = vec![field("Region")];
+        p.values = vec![value("Sales"), value("Qty")];
+    });
+    let t = &two["xl/pivotTables/pivotTable1.xml"];
+    assert!(t.contains("firstHeaderRow=\"0\" firstDataRow=\"1\""), "{t}");
+    assert!(t.contains("<x14:pivotTableDefinition hideValuesRow=\"1\"/>"), "{t}");
+    let one = small_pivot(&cols, |p| {
+        p.rows = vec![field("Region")];
+        p.values = vec![value("Sales")];
+    });
+    let t = &one["xl/pivotTables/pivotTable1.xml"];
+    assert!(t.contains("firstHeaderRow=\"1\""), "{t}");
+    assert!(!t.contains("hideValuesRow"), "{t}");
 }

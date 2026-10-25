@@ -24,6 +24,7 @@ pub mod sheet;
 pub mod slicer;
 pub mod solver;
 pub mod spelling;
+pub mod stash;
 pub mod view;
 pub mod whatif;
 
@@ -101,11 +102,18 @@ pub fn has_doc(s: &Session) -> std::result::Result<(), String> {
 }
 pub fn can_undo(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
+    not_grouping(s)?;
     if s.active().is_some_and(|d| !d.undo.is_empty()) { Ok(()) } else { Err("nothing to undo".into()) }
 }
 pub fn can_redo(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
+    not_grouping(s)?;
     if s.active().is_some_and(|d| !d.redo.is_empty()) { Ok(()) } else { Err("nothing to redo".into()) }
+}
+/// Undo and Redo wait while an undo group is open on the active document (an action that spans
+/// several calls is still running).
+fn not_grouping(s: &Session) -> std::result::Result<(), String> {
+    if s.active().is_some_and(|d| s.in_group(d.uid)) { Err("finish or stop the running action first (automate.stopAction)".into()) } else { Ok(()) }
 }
 pub fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
@@ -187,6 +195,23 @@ pub fn register_test_command(id: &'static str, run: Run) {
     test_commands().push(spec);
 }
 
+/// Test-only: an undoable command, to exercise how `execute` records its step.
+#[cfg(test)]
+pub(crate) fn register_undoable_test_command(id: &'static str, run: Run) {
+    let spec: &'static CommandSpec = Box::leak(Box::new(CommandSpec {
+        id,
+        label: id,
+        menu: &[],
+        shortcut: None,
+        params: "",
+        enabled: |_| Ok(()),
+        run,
+        journal: false,
+        undoable: true,
+    }));
+    test_commands().push(spec);
+}
+
 fn test_commands() -> std::sync::MutexGuard<'static, Vec<&'static CommandSpec>> {
     #[allow(clippy::unwrap_used)] // a poisoned test registry has no meaningful recovery
     match TEST_COMMANDS.lock() {
@@ -254,6 +279,11 @@ pub(crate) fn target_ranges(s: &Session, p: &Json) -> Result<Vec<RangeRef>> {
     Ok(s.doc()?.selection.ranges.clone())
 }
 
+/// A `rows`/`cols` parameter: `3:5` and `B:C`, or a single `3` or `B`.
+pub(crate) fn parse_lines(t: &str) -> Option<RangeRef> {
+    RangeRef::parse(t).or_else(|| if t.contains(':') { None } else { RangeRef::parse(&format!("{t}:{t}")) })
+}
+
 pub(crate) fn target_range(s: &Session, p: &Json) -> Result<RangeRef> {
     Ok(target_ranges(s, p)?.first().copied().unwrap_or_default())
 }
@@ -277,13 +307,7 @@ pub(crate) fn target_sheet(s: &Session, p: &Json) -> Result<usize> {
     Ok(d.wb.active_sheet)
 }
 
-/// `'My Sheet'!A1` → (`Some("My Sheet")`, `A1`).
-pub(crate) fn split_sheet(r: &str) -> (Option<String>, &str) {
-    match r.rsplit_once('!') {
-        Some((sh, body)) => (Some(sh.trim_matches('\'').replace("''", "'")), body),
-        None => (None, r),
-    }
-}
+pub(crate) use gridcraft_core::split_sheet;
 
 /// A single-cell parameter. Absent or null is `Ok(None)` (callers default it); a value that is not
 /// a cell reference, or that names a sheet other than the active one, is an error rather than a
@@ -402,6 +426,18 @@ fn check_protection(old: &Workbook, new: &Workbook, unlocked: &[(String, String)
     Ok(())
 }
 
+/// Refuses an action a protected sheet does not allow, by the tick box for it in Review ▸ Protect
+/// Sheet. `what` names the action in the message. An unprotected sheet allows everything.
+///
+/// Cell edits are guarded separately, by whether the cell is locked (`locked_cell_error`): these
+/// permissions are the ones that are not about one cell's contents.
+pub(crate) fn refuse_unless_allowed(s: &Session, sheet: usize, what: &str, pick: fn(&gridcraft_model::SheetProtection) -> bool) -> Result<()> {
+    if s.doc()?.wb.sheet(sheet).is_some_and(|sh| sh.protection.as_ref().is_some_and(|pr| !pick(pr))) {
+        return Err(EngineError::Other(format!("{what} isn't allowed on this protected sheet (Review › Unprotect Sheet).")));
+    }
+    Ok(())
+}
+
 /// Whether a locked cell on a protected sheet stays locked: `None` when it's in an Allow Edit
 /// Range without a password or one unlocked in this session, else the message to show.
 pub(crate) fn locked_cell_error(sh: &gridcraft_model::Sheet, c: CellRef, unlocked: &[(String, String)]) -> Option<String> {
@@ -461,18 +497,53 @@ fn same_content(a: Option<&gridcraft_model::Cell>, b: Option<&gridcraft_model::C
     }
 }
 
-/// Recomputes an automatic row height from its content: the largest font, and wrapped or
-/// multi-line text. Rows with a user-set height keep it.
+/// Lines a single text line needs when word-wrapped into `width` points. The grid wraps whole
+/// words (egui's LayoutJob), so dividing the total width by the column width undercounts: each
+/// drawn line ends early at the last word that fits. A word wider than the column breaks
+/// mid-word, the way egui does. (#1969)
+fn wrapped_line_count(line: &str, width: f32, size: f32, bold: bool) -> f32 {
+    let word_w = |w: &str| crate::cmd::format::approx_text_width(w, size, bold);
+    let space_w = word_w(" ");
+    let mut lines = 1.0f32;
+    let mut used = 0.0f32;
+    for word in line.split_whitespace() {
+        let w = word_w(word);
+        if w > width {
+            // wider than the column: egui fills the current line, then breaks it across lines
+            if used > 0.0 {
+                lines += 1.0;
+            }
+            let chunks = (w / width).ceil();
+            lines += chunks - 1.0;
+            used = w - (chunks - 1.0) * width;
+            continue;
+        }
+        let gap = if used > 0.0 { space_w } else { 0.0 };
+        if used + gap + w > width {
+            lines += 1.0;
+            used = w;
+        } else {
+            used += gap + w;
+        }
+    }
+    lines
+}
+
+/// Recomputes an automatic row height from its content: the largest font, and wrapped text.
+/// Rows with a user-set height keep it.
+///
+/// Line breaks in a cell's text count only when the cell wraps, as in Excel: with Wrap Text off
+/// a multi-line value shows on one line and AutoFit gives a one-line row.
 pub fn auto_row_height(wb: &mut Workbook, si: usize, row: u32) {
     let Some(sh) = wb.sheet(si) else { return };
     if sh.rows.get(&row).is_some_and(|i| i.custom) {
         return;
     }
     let default = sh.default_row_height;
-    // Fast path: rows of default-size, unwrapped, single-line content keep the default height.
+    // Fast path: rows of default-size, unwrapped content keep the default height.
     let plain = sh.cells.row(row, 0, gridcraft_core::MAX_COLS - 1).all(|(_, cell)| {
         let st = wb.styles.get(cell.style);
-        st.font.size <= gridcraft_model::DEFAULT_FONT_SIZE && !st.align.wrap && !cell.value.as_text().is_some_and(|t| t.contains('\n'))
+        st.font.size <= gridcraft_model::DEFAULT_FONT_SIZE && !st.align.wrap
     });
     if plain {
         if sh.rows.get(&row).is_some_and(|i| i.size.is_some())
@@ -489,23 +560,31 @@ pub fn auto_row_height(wb: &mut Workbook, si: usize, row: u32) {
         return;
     }
     let mut need: f32 = default;
+    // The cell loop must not rescan every merge per cell: the merges touching this row are
+    // picked out once, and per cell the candidates are re-checked (normally none or a couple;
+    // a sheet with many merges and many saved columns would otherwise scan all of them per
+    // cell, rows × merges × columns).
+    let row_merges: Vec<gridcraft_core::RangeRef> =
+        sh.merges.iter().copied().filter(|m| !m.is_single() && m.start.row <= row && row <= m.end.row).collect();
     for (c, cell) in sh.cells.row(row, 0, gridcraft_core::MAX_COLS - 1) {
+        // Merged cells never auto-fit their rows, like Excel (column autofit skips them too).
+        if row_merges.iter().any(|m| m.contains(CellRef::new(row, c))) {
+            continue;
+        }
         let st = wb.styles.get(cell.style);
         let size = st.font.size;
-        let line = (size * 1.8).round().max(default * size / gridcraft_model::DEFAULT_FONT_SIZE);
+        // Scaled from an 11pt row's height, not the sheet's default: a sheet whose default
+        // already fits a bigger font (21pt rows for 16pt text) would otherwise scale it twice.
+        let line = (size * 1.8).round().max(gridcraft_model::DEFAULT_ROW_HEIGHT * size / gridcraft_model::DEFAULT_FONT_SIZE);
         let mut lines = 1.0f32;
         if !cell.value.is_empty() || cell.formula.is_some() {
-            let text = crate::display::cell_text(wb, sh, CellRef::new(row, c));
-            let explicit = text.lines().count().max(1) as f32;
-            lines = if st.align.wrap {
+            // Only a wrapping cell is laid out over several lines: each explicit line break
+            // starts one, and each line folds at the column width.
+            if st.align.wrap {
+                let text = crate::display::cell_text(wb, sh, CellRef::new(row, c));
                 let w = sh.col_width(c).max(1.0) - 6.0;
-                text.lines()
-                    .map(|l| (crate::cmd::format::approx_text_width(l, size, st.font.bold) / w.max(1.0)).ceil().max(1.0))
-                    .sum::<f32>()
-                    .max(1.0)
-            } else {
-                explicit
-            };
+                lines = text.lines().map(|l| wrapped_line_count(l, w.max(1.0), size, st.font.bold)).sum::<f32>().max(1.0);
+            }
         } else if st.font.size <= gridcraft_model::DEFAULT_FONT_SIZE {
             continue;
         }

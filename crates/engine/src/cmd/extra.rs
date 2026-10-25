@@ -111,7 +111,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rotate",
             ["Page Layout", "Arrange"],
             None,
-            "{kind: shape, id, flip?: horizontal|vertical} (swaps width/height for 90° turns)",
+            "{kind: shape, id} (swaps width/height for a 90° turn; `flip` is rejected: shapes have no flip state)",
             has_doc,
             rotate
         ),
@@ -193,8 +193,34 @@ pub fn specs() -> Vec<CommandSpec> {
             new_script
         ),
         cmd!(query "automate.allScripts", "All Scripts", ["Automate", "Scripting Tools"], None, "{} → saved scripts", has_doc, all_scripts),
-        cmd!("automate.runScript", "Run Script", [], None, "{name}", has_doc, run_script),
+        cmd!(
+            "automate.runScript",
+            "Run Script",
+            [],
+            None,
+            "{name, trusted?: bool (runs a script from an untrusted workbook this once)} — refuses scripts in a workbook opened from a file until it is trusted, and steps that reach outside the workbook (file.*, link.*, any `path` param)",
+            has_doc,
+            run_script
+        ),
+        cmd!(
+            noundo "automate.trustScripts",
+            "Trust Scripts",
+            ["Automate", "Scripting Tools"],
+            None,
+            "{trusted?: bool (default true)} → {trusted}: lets this workbook's scripts run for the rest of the session",
+            has_doc,
+            trust_scripts
+        ),
         cmd!("automate.deleteScript", "Delete Script", [], None, "{name}", has_doc, delete_script),
+        cmd!(
+            noundo "automate.stopAction",
+            "Stop Action",
+            [],
+            None,
+            "{} → {stopped: bool}: stops an action left running on the active workbook (an open undo group, such as a debugger's) and puts back the workbook and its undo history as they were when it began",
+            has_doc,
+            stop_action
+        ),
         // Cell controls, themes, borders, styles
         cmd!(
             "insert.checkbox",
@@ -351,7 +377,7 @@ fn add_element(s: &mut Session, p: &Json) -> Result<Json> {
 /// The trendline described by `chart.addElement`'s trendline parameters (Excel's Add Chart
 /// Element ▸ Trendline choices, plus the Format Trendline options).
 fn trendline_param(p: &Json) -> Result<Trendline> {
-    let num = |k: &str| f64_param(p, k).filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(0.0);
+    let num = |k: &str| Trendline::clamp_forecast(f64_param(p, k).unwrap_or(0.0));
     let mut t = Trendline {
         forward: num("forward"),
         backward: num("backward"),
@@ -662,6 +688,9 @@ fn align(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 fn rotate(s: &mut Session, p: &Json) -> Result<Json> {
+    if p.get("flip").is_some_and(|f| !f.is_null()) {
+        return Err(bad("arrange.rotate", "`flip` is not supported: shapes have no flip state"));
+    }
     with_shape(s, p, |sh| std::mem::swap(&mut sh.anchor.width, &mut sh.anchor.height))
 }
 
@@ -780,8 +809,9 @@ fn split(s: &mut Session, _: &Json) -> Result<Json> {
 
 fn new_window(s: &mut Session, _: &Json) -> Result<Json> {
     let d = s.doc()?.clone();
-    let mut copy = crate::DocState::new((*d.wb).clone(), d.path.clone(), format!("{}:2", d.display_title()));
+    let mut copy = crate::DocState::new((*d.wb).clone(), d.path.clone(), format!("{}:2", d.display_title()), d.trust);
     copy.selection = d.selection.clone();
+    copy.scripts_trusted = d.scripts_trusted;
     let i = s.add_document(copy);
     Ok(json!({"index": i}))
 }
@@ -828,6 +858,9 @@ fn table_resize(s: &mut Session, p: &Json) -> Result<Json> {
     edit(s, |cx| {
         let sheet = cx.sheet_mut(si)?;
         let headers: Vec<String> = (r.start.col..=r.end.col).map(|c| sheet.value(CellRef::new(r.start.row, c)).display()).collect();
+        if sheet.tables.iter().enumerate().any(|(i, o)| i != ti && o.range.intersects(&r)) {
+            return Err(EngineError::Other("A table can't overlap another table.".into()));
+        }
         let t = sheet.tables.get_mut(ti).ok_or_else(|| bad("table", "gone"))?;
         if r.start.row != t.range.start.row || !r.intersects(&t.range) {
             return Err(EngineError::Other(
@@ -970,10 +1003,13 @@ fn new_script(s: &mut Session, p: &Json) -> Result<Json> {
 }
 
 fn all_scripts(s: &mut Session, _: &Json) -> Result<Json> {
-    let wb = &s.doc()?.wb;
+    let d = s.doc()?;
+    let (wb, trusted) = (&d.wb, d.scripts_trusted);
     let all = stash_get(wb, SCRIPTS_NAME);
-    let mut list: Vec<Json> =
-        all.as_object().map(|o| o.iter().map(|(k, v)| json!({"name": k, "steps": v.as_array().map_or(0, Vec::len)})).collect()).unwrap_or_default();
+    let mut list: Vec<Json> = all
+        .as_object()
+        .map(|o| o.iter().map(|(k, v)| json!({"name": k, "steps": v.as_array().map_or(0, Vec::len), "trusted": trusted})).collect())
+        .unwrap_or_default();
     // A preserved VBA project is reported alongside GridCraft's own scripts; it is carried on
     // save but never executed here, so it has no step count.
     if let Some(bytes) = &wb.vba_project {
@@ -982,20 +1018,94 @@ fn all_scripts(s: &mut Session, _: &Json) -> Result<Json> {
     Ok(Json::Array(list))
 }
 
+/// Whether `wb` carries GridCraft scripts (a workbook opened with them starts untrusted).
+pub(crate) fn has_scripts(wb: &Workbook) -> bool {
+    stash_map(wb, SCRIPTS_NAME).as_object().is_some_and(|o| !o.is_empty())
+}
+
+/// Why a script step is refused, whatever the workbook's trust: scripts stay inside the
+/// workbook. Anything that reads or writes files (`file.*`, or any `path` parameter: Get Data,
+/// From Text/CSV, Insert Picture) or leaves the app (`link.*` opens URLs) is the caller's to run
+/// directly, not a stored script's. (Nested `automate.*` steps are skipped.) This check goes by
+/// command id and parameter name, so it is only the up-front refusal: the steps also run inside
+/// an [`crate::io::ScriptSandbox`] (file access refused whatever the parameter is called) and
+/// [`run_script`] drops any `OpenUrl` request a step raises.
+fn denied_script_step(id: &str, params: &Json) -> Option<String> {
+    if id.starts_with("file.") || id.starts_with("link.") {
+        return Some(format!("scripts can't run `{id}`: it reaches outside the workbook"));
+    }
+    // Scripts are scoped to their workbook: a step that switches the active window would
+    // point every later step at another open document, so those are refused too.
+    if id.starts_with("window.") {
+        return Some(format!("scripts can't run `{id}`: it reaches outside the workbook"));
+    }
+    if params.get("path").is_some() {
+        return Some(format!("scripts can't pass a file `path` to `{id}`"));
+    }
+    None
+}
+
+fn trust_scripts(s: &mut Session, p: &Json) -> Result<Json> {
+    // Only a missing `trusted` means "trust"; `"false"`, `0` or `null` are mistakes, not consent.
+    let trusted = match p.get("trusted") {
+        None => true,
+        Some(Json::Bool(b)) => *b,
+        Some(_) => return Err(bad("automate.trustScripts", "`trusted` must be true or false")),
+    };
+    s.doc_mut()?.scripts_trusted = trusted;
+    Ok(json!({"trusted": trusted}))
+}
+
+/// Runs a stored script. Scripts in a workbook opened from a file run only once the workbook is
+/// trusted for this session (`automate.trustScripts`, or `trusted: true` on this call); steps that
+/// reach outside the workbook ([`denied_script_step`]) are refused before any step runs.
 fn run_script(s: &mut Session, p: &Json) -> Result<Json> {
     let name = str_param(p, "name").ok_or_else(|| bad("automate.runScript", "missing `name`"))?;
-    let all = stash_get(&s.doc()?.wb, SCRIPTS_NAME);
+    let d = s.doc()?;
+    let all = stash_get(&d.wb, SCRIPTS_NAME);
     let steps = all.get(name).and_then(Json::as_array).cloned().ok_or_else(|| bad("automate.runScript", "no such script"))?;
+    if !d.scripts_trusted && !bool_param(p, "trusted").unwrap_or(false) {
+        return Err(bad(
+            "automate.runScript",
+            "scripts in this workbook came from a file and are disabled; trust the workbook first (Trust Scripts in View › Macros, Alt+F8; `automate.trustScripts`; or `trusted: true`)",
+        ));
+    }
+    let steps: Vec<Json> = steps.into_iter().take(100_000).collect();
+    for st in &steps {
+        let id = st["command"].as_str().unwrap_or("");
+        if let Some(why) = denied_script_step(id, &st["params"]) {
+            return Err(bad("automate.runScript", why));
+        }
+    }
+    let _sandbox = crate::io::ScriptSandbox::enter();
     let mut n = 0;
-    for st in steps.iter().take(100_000) {
+    for st in &steps {
         let id = st["command"].as_str().unwrap_or("");
         if id.starts_with("automate.") {
             continue;
         }
-        s.execute(id, st["params"].clone())?;
+        let before = s.ui_requests.len();
+        let ran = s.execute(id, st["params"].clone());
+        // A step that asks the host to open a URL leaves the app: drop the request and stop.
+        if s.ui_requests.get(before..).is_some_and(|new| new.iter().any(|r| matches!(r, crate::UiRequest::OpenUrl(_)))) {
+            let mut i = 0;
+            s.ui_requests.retain(|r| {
+                i += 1;
+                i <= before || !matches!(r, crate::UiRequest::OpenUrl(_))
+            });
+            return Err(bad("automate.runScript", format!("scripts can't open links (`{id}`)")));
+        }
+        ran?;
         n += 1;
     }
     Ok(json!({"ran": n}))
+}
+
+/// Automate › Stop Action: rolls back the undo groups open on the active workbook, so Undo and
+/// Redo work there again.
+fn stop_action(s: &mut Session, _: &Json) -> Result<Json> {
+    let uid = s.doc()?.uid;
+    Ok(json!({"stopped": s.abort_groups(uid)}))
 }
 
 fn delete_script(s: &mut Session, p: &Json) -> Result<Json> {
@@ -1160,7 +1270,7 @@ fn recently_used(s: &mut Session, _: &Json) -> Result<Json> {
 
 fn use_in_formula(s: &mut Session, p: &Json) -> Result<Json> {
     let name = str_param(p, "name").ok_or_else(|| bad("formulas.useInFormula", "missing `name`"))?;
-    s.ui_requests.push(crate::UiRequest::EditCell(Some(format!("={name}"))));
+    s.ui_requests.push(crate::UiRequest::InsertName(name.to_string()));
     ok()
 }
 

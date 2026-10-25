@@ -9,7 +9,8 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use gridcraft_core::date::datetime_from_serial;
-use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value};
+pub use gridcraft_core::quote_sheet;
+use gridcraft_core::{CellError, CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value, split_sheet};
 use gridcraft_model::*;
 
 use crate::pivot_calc::CalcSet;
@@ -44,26 +45,6 @@ pub struct Source {
 impl Source {
     pub fn col(&self, name: &str) -> Option<usize> {
         self.headers.iter().position(|h| h.eq_ignore_ascii_case(name))
-    }
-}
-
-/// `'My Sheet'!A1` → (`Some("My Sheet")`, `A1`).
-fn split_sheet(r: &str) -> (Option<String>, &str) {
-    match r.rsplit_once('!') {
-        Some((sh, body)) => (Some(sh.trim_matches('\'').replace("''", "'")), body),
-        None => (None, r),
-    }
-}
-
-/// Quotes a sheet name for a reference when needed.
-pub fn quote_sheet(name: &str) -> String {
-    if !name.is_empty()
-        && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
-        && !name.chars().next().is_some_and(|c| c.is_ascii_digit())
-    {
-        name.to_string()
-    } else {
-        format!("'{}'", name.replace('\'', "''"))
     }
 }
 
@@ -822,6 +803,70 @@ fn data_cols_exceed_sheet(col_groups: usize, grand_total: bool, values: usize) -
 /// Computes a PivotTable report from the workbook.
 pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Output, String> {
     let src = read_source(wb, &pt.source, pivot_sheet)?;
+    compute_from(wb, pt, &src, None)
+}
+
+/// Why Show Details turns a cell down when it isn't a value cell of a PivotTable (the front end
+/// edits that cell instead).
+pub const NOT_A_VALUE_CELL: &str = "select a value cell in a PivotTable";
+
+/// Show Details: the source list and the indices of its records behind the value cell at
+/// (`row`, `col`) of the report grid (relative to its top-left), in source order. `None` when
+/// that cell holds no value (a label, a header, a blank). An error, for any cell, when the report
+/// on the sheet is no longer what the source computes: the cell's records would be another cell's.
+pub fn detail_records(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize, row: u32, col: u32) -> Result<Option<(Source, Vec<usize>)>, String> {
+    let src = read_source(wb, &pt.source, pivot_sheet)?;
+    let mut probe = Probe { at: Some((row as usize, col as usize)), hit: None, paths: Some(Vec::new()), cells: None };
+    let out = compute_from(wb, pt, &src, Some(&mut probe))?;
+    // Checked first: in a stale report even a cell that computes as a label may show a value.
+    check_current(wb, pt, pivot_sheet, &out)?;
+    let Some((rp, cp)) = probe.hit else { return Ok(None) };
+    let records =
+        probe.paths.unwrap_or_default().into_iter().filter(|(_, r, c)| r.starts_with(&rp) && c.starts_with(&cp)).map(|(i, _, _)| i).collect();
+    Ok(Some((src, records)))
+}
+
+/// The cells of the report grid (relative to its top-left) where [`detail_records`] finds
+/// records: its value, subtotal and grand total cells, from one computation of the report. The
+/// same errors as [`detail_records`].
+pub fn detail_cells(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<HashSet<(u32, u32)>, String> {
+    let src = read_source(wb, &pt.source, pivot_sheet)?;
+    let mut probe = Probe { at: None, hit: None, paths: None, cells: Some(HashSet::new()) };
+    let out = compute_from(wb, pt, &src, Some(&mut probe))?;
+    check_current(wb, pt, pivot_sheet, &out)?;
+    Ok(probe.cells.unwrap_or_default().into_iter().map(|(r, c)| (r as u32, c as u32)).collect())
+}
+
+/// An error when the report on the sheet is not what `out` computes. Excel reads its PivotTable
+/// cache; without one, the report written by the last refresh must still be what the source gives.
+fn check_current(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize, out: &Output) -> Result<(), String> {
+    let sh = wb.sheet(pivot_sheet).ok_or("There's no such sheet.")?;
+    let current = pt.last_range.is_some_and(|r| {
+        r.height() == out.height().max(1)
+            && r.width() == out.width.max(1)
+            && out.grid.iter().enumerate().all(|(ri, line)| {
+                line.iter().enumerate().all(|(ci, oc)| {
+                    sh.value_ref(CellRef::new(r.start.row + ri as u32, r.start.col + ci as u32)).unwrap_or(&Value::Empty) == &oc.value
+                })
+            })
+    });
+    if !current {
+        return Err("The PivotTable report is out of date. Refresh it first.".into());
+    }
+    Ok(())
+}
+
+/// What [`detail_records`] and [`detail_cells`] ask of a report computation: the row and column
+/// item paths of the value cell at `at`, the paths of every record the filters let through (when
+/// `paths` is set), and every value cell (when `cells` is set).
+struct Probe {
+    at: Option<(usize, usize)>,
+    hit: Option<(Vec<u32>, Vec<u32>)>,
+    paths: Option<Vec<(usize, Vec<u32>, Vec<u32>)>>,
+    cells: Option<HashSet<(usize, usize)>>,
+}
+
+fn compute_from(wb: &Workbook, pt: &PivotTable, src: &Source, mut probe: Option<&mut Probe>) -> Result<Output, String> {
     let fmt_of = |c: usize| src.formats.get(c).cloned().unwrap_or_else(|| "General".into());
     let rows: Vec<(usize, &PivotField)> = pt.rows.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
     let cols: Vec<(usize, &PivotField)> = pt.columns.iter().filter_map(|f| src.col(&f.source_col).map(|c| (c, f))).collect();
@@ -932,6 +977,9 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
             .map_or(cp.len(), |d| d + 1);
         if !col_leaves.contains(&cp[..shown]) {
             col_leaves.insert(cp[..shown].to_vec());
+        }
+        if let Some(paths) = probe.as_deref_mut().and_then(|pr| pr.paths.as_mut()) {
+            paths.push((ri, rp.clone(), cp.clone()));
         }
         row_set.insert(rp);
         col_set.insert(cp);
@@ -1297,6 +1345,14 @@ pub fn compute(wb: &Workbook, pt: &PivotTable, pivot_sheet: usize) -> Result<Out
                     _ => raw,
                 },
             };
+            if let Some(pr) = probe.as_deref_mut() {
+                if pr.at == Some((r, l + j)) {
+                    pr.hit = Some((rp.to_vec(), cp.to_vec()));
+                }
+                if let Some(cells) = pr.cells.as_mut() {
+                    cells.insert((r, l + j));
+                }
+            }
             g.set(r, l + j, shown, ck.1, 0, data_fmt.get(*vi).cloned().flatten());
         }
     }
@@ -1511,7 +1567,7 @@ pub fn parse_chart_link(link: &str) -> Option<(String, String)> {
     };
     let (sheet, name) = t.rsplit_once('!')?;
     let sheet = sheet.trim();
-    let sheet = sheet.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')).map(|x| x.replace("''", "'")).unwrap_or_else(|| sheet.to_string());
+    let sheet = gridcraft_core::unquote_sheet(sheet);
     let name = name.trim();
     if sheet.is_empty() || name.is_empty() {
         return None;
@@ -1567,6 +1623,7 @@ pub fn chart_series(sheet: &str, origin: CellRef, out: &Output) -> Vec<Series> {
                 color: None,
                 secondary: false,
                 kind: None,
+                quartiles: Default::default(),
                 smooth: false,
                 trendlines: Vec::new(),
             })

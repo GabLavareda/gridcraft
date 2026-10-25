@@ -7,8 +7,8 @@ use serde_json::json;
 use crate::SheetApp;
 use crate::icons::{self, Icon};
 use crate::keytips::keytip_table;
-use crate::theme::{self, Tokens};
-use crate::widgets::{big_button, color_palette, icon_button, small_button, split_button, toggle_button};
+use crate::theme::{self, Cat, Tokens};
+use crate::widgets::{big_button, big_split_button, color_palette, icon_button, small_button, small_split_button, split_button, toggle_button};
 
 pub const TABS: &[&str] = &["Home", "Insert", "Draw", "Page Layout", "Formulas", "Data", "Review", "View", "Automate"];
 
@@ -52,15 +52,15 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
         ui.horizontal_centered(|ui| {
             ui.add_space(TITLE_LEFT_PAD);
             // AutoSave toggle (saves after each change when the workbook has a file).
-            ui.label(egui::RichText::new("AutoSave").font(theme::ui_font(12.5)).color(t.text_dim));
-            let on = app.grid.autosave();
+            ui.label(egui::RichText::new(app.ui.language.tr("AutoSave")).font(theme::ui_font(12.5)).color(t.text_dim));
+            let on = app.ui.autosave;
             let (r, resp) = ui.allocate_exact_size(vec2(30.0, 16.0), Sense::click());
             ui.painter().rect_filled(r, 8.0, if on { t.accent } else { Color32::TRANSPARENT });
             ui.painter().rect_stroke(r, 8.0, Stroke::new(1.0, if on { t.accent } else { t.text_dim }), StrokeKind::Inside);
             let knob = if on { pos2(r.right() - 8.0, r.center().y) } else { pos2(r.left() + 8.0, r.center().y) };
-            ui.painter().circle_filled(knob, 5.0, if on { Color32::WHITE } else { t.text_dim });
-            if resp.on_hover_text("AutoSave: save after every change (workbooks saved to a file)").clicked() {
-                app.grid.toggle_autosave();
+            ui.painter().circle_filled(knob, 5.0, if on { t.on_accent } else { t.text_dim });
+            if resp.on_hover_text(app.ui.language.tr("AutoSave: save after every change (workbooks saved to a file)")).clicked() {
+                app.toggle_autosave();
             }
             ui.add_space(6.0);
             let __k = icon_button(ui, Icon::Home, t.text_dim, "Home", vec2(26.0, ch));
@@ -68,21 +68,29 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
             if __k.clicked() {
                 app.open_dialog("start", json!({}));
             }
-            if icon_button(ui, Icon::Save, t.text_dim, "Save (⌘S)", vec2(26.0, ch)).clicked()
+            if icon_button(ui, Icon::Save, t.text_dim, "Save", vec2(26.0, ch)).clicked()
                 // File operations must include the cell the user is still editing (as the File > Save menu item already does).
                 && app.commit_edit(0, 0, false, false)
             {
                 app.run_or_alert("file.save", json!({}));
             }
-            let can_undo = app.session.active().is_some_and(|d| !d.undo.is_empty());
-            let can_redo = app.session.active().is_some_and(|d| !d.redo.is_empty());
-            if icon_button(ui, Icon::Undo, if can_undo { t.text_dim } else { t.text_disabled }, "Undo (⌘Z)", vec2(26.0, ch)).clicked() && can_undo {
+            // The commands' own availability: there must be a step, and no undo group may be open on
+            // the document (an action that spans several calls is still running).
+            let can_undo = gridcraft_engine::cmd::can_undo(&app.session).is_ok();
+            let can_redo = gridcraft_engine::cmd::can_redo(&app.session).is_ok();
+            // Named and marked enabled or not for assistive technology (and the UI tests).
+            let undo = icon_button(ui, Icon::Undo, if can_undo { t.text_dim } else { t.text_disabled }, "Undo", vec2(26.0, ch));
+            undo.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, can_undo, "Undo"));
+            if undo.clicked() && can_undo {
                 app.run_or_alert("edit.undo", json!({}));
             }
             let undo_list = icon_button(ui, Icon::Chevron, t.text_dim, "Undo list", vec2(14.0, ch));
             egui::Popup::menu(&undo_list).show(|ui| {
-                let labels: Vec<String> =
-                    app.session.active().map(|d| d.undo.iter().rev().take(20).map(|e| e.label.clone()).collect()).unwrap_or_default();
+                let labels: Vec<String> = if can_undo {
+                    app.session.active().map(|d| d.undo.iter().rev().take(20).map(|e| e.label.clone()).collect()).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 if labels.is_empty() {
                     ui.label("Can't Undo");
                 }
@@ -92,7 +100,9 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                     }
                 }
             });
-            if icon_button(ui, Icon::Redo, if can_redo { t.text_dim } else { t.text_disabled }, "Redo (⌘Y)", vec2(26.0, ch)).clicked() && can_redo {
+            let redo = icon_button(ui, Icon::Redo, if can_redo { t.text_dim } else { t.text_disabled }, "Redo", vec2(26.0, ch));
+            redo.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, can_redo, "Redo"));
+            if redo.clicked() && can_redo {
                 app.run_or_alert("edit.redo", json!({}));
             }
             let more = icon_button(ui, Icon::More, t.text_dim, "More commands", vec2(26.0, ch));
@@ -112,19 +122,10 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                     app.print_now(json!({}));
                 }
             });
-            // Centered title.
-            let title = app.session.active().map(|d| d.display_title()).unwrap_or_default();
-            let dirty = app.session.active().is_some_and(|d| d.is_dirty());
-            ui.painter().text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                format!("{title}{}", if dirty { " •" } else { "" }),
-                theme::ui_bold(13.0),
-                t.text,
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let left_end = ui.min_rect().right();
+            let right = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
-                let __k = icon_button(ui, Icon::Search, t.text_dim, "Search commands (⌘⇧Space)", vec2(28.0, ch));
+                let __k = icon_button(ui, Icon::Search, t.text_dim, "Search commands", vec2(28.0, ch));
                 control_keytip(app, ui, &__k, "commandSearch");
                 if __k.clicked() {
                     app.open_dialog("commandSearch", json!({}));
@@ -157,15 +158,67 @@ pub fn title_bar(app: &mut SheetApp, ui: &mut Ui) {
                     act(app, "view.darkMode", json!({}));
                 }
                 theme.context_menu(|ui| theme_choices(app, ui));
+                ui.min_rect().left()
             });
+            // Centred title, cut with "…" so it never runs under the controls on either side.
+            let title = app.session.active().map(|d| d.display_title()).unwrap_or_default();
+            let dirty = app.session.active().is_some_and(|d| d.is_dirty());
+            let max_w = title_max_width(rect.center().x, left_end, right.inner);
+            paint_title(ui, rect.center(), &title, dirty, max_w, t.text);
         });
     });
+}
+
+/// Lay out the title truncated to fit `max_w` together with the unsaved marker (when `dirty`).
+fn title_galleys(
+    painter: &egui::Painter,
+    title: &str,
+    dirty: bool,
+    max_w: f32,
+    color: Color32,
+) -> (std::sync::Arc<egui::Galley>, Option<std::sync::Arc<egui::Galley>>) {
+    let font = theme::ui_bold(13.0);
+    let dot = dirty.then(|| painter.layout_no_wrap(" •".to_string(), font.clone(), color));
+    let dot_w = dot.as_ref().map_or(0.0, |g| g.size().x);
+    let mut job = egui::text::LayoutJob::simple_singleline(title.to_string(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((max_w - dot_w).max(0.0));
+    (painter.layout_job(job), dot)
+}
+
+/// Gap kept between the title and the controls beside it.
+const TITLE_GAP: f32 = 12.0;
+
+/// The widest the centred title may be without reaching the controls that end at `left_end` or
+/// start at `right_start`.
+fn title_max_width(center_x: f32, left_end: f32, right_start: f32) -> f32 {
+    let half = (center_x - left_end).min(right_start - center_x) - TITLE_GAP;
+    (2.0 * half).max(0.0)
+}
+
+/// Paint the workbook title centred on `center`, truncated with "…" to `max_w`. The unsaved
+/// marker stays visible however short the title gets.
+fn paint_title(ui: &Ui, center: egui::Pos2, title: &str, dirty: bool, max_w: f32, color: Color32) {
+    let (galley, dot) = title_galleys(ui.painter(), title, dirty, max_w, color);
+    let dot_w = dot.as_ref().map_or(0.0, |g| g.size().x);
+    let w = galley.size().x + dot_w;
+    let left = center.x - w / 2.0;
+    let top = center.y - galley.size().y / 2.0;
+    let galley_w = galley.size().x;
+    ui.painter().galley(pos2(left, top), galley, color);
+    if let Some(dot) = dot {
+        ui.painter().galley(pos2(left + galley_w, top), dot, color);
+    }
 }
 
 pub fn show(app: &mut SheetApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let collapsed = app.ui.ribbon_collapsed;
     let h = if collapsed { 34.0 } else { 34.0 + 92.0 };
+    // A contextual tab exists only while its object is selected (Excel hides Table Design once the
+    // cell leaves the table); a remembered one that is gone would draw an empty ribbon.
+    if CONTEXTUAL_TABS.contains(&app.ui.ribbon_tab.as_str()) && !contextual_tabs(app).contains(&app.ui.ribbon_tab.as_str()) {
+        app.ui.ribbon_tab = "Home".to_string();
+    }
     egui::Panel::top("ribbon")
         .exact_size(h)
         .frame(egui::Frame::NONE.fill(t.window).inner_margin(egui::Margin { left: 10, right: 10, top: 0, bottom: 6 }))
@@ -226,34 +279,120 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
             if collapsed {
                 return;
             }
-            // Ribbon card.
-            let card = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 88.0));
+            // Ribbon card. The row above it can be wider than a narrow window, so the card is kept
+            // within the window (with the margin it has on the left), or its right scroll arrow
+            // would be drawn off screen.
+            let left = ui.cursor().min.x;
+            let screen = ui.ctx().content_rect();
+            let fits = (screen.right() - left - (left - screen.left()).max(0.0)).max(0.0);
+            let card = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width().min(fits), 88.0));
             ui.painter().rect_filled(card, 10.0, t.ribbon);
             ui.painter().rect_stroke(card, 10.0, Stroke::new(1.0, t.ribbon_border), StrokeKind::Inside);
             let inner = card.shrink2(vec2(10.0, 6.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
-                egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
-                        match app.ui.ribbon_tab.as_str() {
-                            "Home" => home(app, ui),
-                            "Insert" => insert(app, ui),
-                            "Draw" => draw(app, ui),
-                            "Page Layout" => page_layout(app, ui),
-                            "Formulas" => formulas(app, ui),
-                            "Data" => data(app, ui),
-                            "Review" => review(app, ui),
-                            "View" => view(app, ui),
-                            "Automate" => automate(app, ui),
-                            "Table Design" => table_design(app, ui),
-                            "Chart Design" => chart_design(app, ui),
-                            crate::paper_view::TAB => crate::paper_view::ribbon_tab(app, ui),
-                            _ => home(app, ui),
-                        }
+                // One scroll state per tab: a tab opened after scrolling another starts at its
+                // left edge, and a tab keeps its own offset while others are used.
+                let scroll = egui::ScrollArea::horizontal()
+                    .id_salt(("ribbon_scroll", app.ui.ribbon_tab.as_str()))
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
+                            match app.ui.ribbon_tab.as_str() {
+                                "Home" => home(app, ui),
+                                "Insert" => insert(app, ui),
+                                "Draw" => draw(app, ui),
+                                "Page Layout" => page_layout(app, ui),
+                                "Formulas" => formulas(app, ui),
+                                "Data" => data(app, ui),
+                                "Review" => review(app, ui),
+                                "View" => view(app, ui),
+                                "Automate" => automate(app, ui),
+                                "Table Design" => table_design(app, ui),
+                                "Chart Design" => chart_design(app, ui),
+                                crate::paper_view::TAB => crate::paper_view::ribbon_tab(app, ui),
+                                _ => home(app, ui),
+                            }
+                        });
                     });
-                });
+                scroll_arrows(ui, &t, scroll);
             });
         });
+}
+
+/// How much of the active tab's groups the ribbon card shows, recorded each frame for the scroll
+/// arrows and for tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RibbonOverflow {
+    /// Width of all the tab's groups.
+    pub content: f32,
+    /// Width of the card's content area.
+    pub visible: f32,
+    /// How far the groups are scrolled.
+    pub offset: f32,
+    /// Height of the tallest group (a column of small buttons) and of the content area.
+    pub content_height: f32,
+    pub visible_height: f32,
+}
+
+impl RibbonOverflow {
+    fn id() -> egui::Id {
+        egui::Id::new("ribbon_overflow")
+    }
+
+    /// Last frame's overflow.
+    pub fn get(ctx: &egui::Context) -> RibbonOverflow {
+        ctx.data(|d| d.get_temp(Self::id())).unwrap_or_default()
+    }
+
+    /// Whether the groups are wider than the card.
+    pub fn overflows(&self) -> bool {
+        self.content > self.visible + 0.5
+    }
+}
+
+/// When the tab's groups are wider than the card, arrows at its edges scroll them (the mouse wheel
+/// over the card still does too).
+fn scroll_arrows(ui: &mut Ui, t: &Tokens, mut scroll: egui::scroll_area::ScrollAreaOutput<()>) {
+    let inner = scroll.inner_rect;
+    let max = (scroll.content_size.x - inner.width()).max(0.0);
+    let overflow = RibbonOverflow {
+        content: scroll.content_size.x,
+        visible: inner.width(),
+        offset: scroll.state.offset.x,
+        content_height: scroll.content_size.y,
+        visible_height: inner.height(),
+    };
+    ui.ctx().data_mut(|d| d.insert_temp(RibbonOverflow::id(), overflow));
+    if !overflow.overflows() {
+        return;
+    }
+    let step = (inner.width() * 0.6).max(60.0);
+    let mut target = None;
+    for (left, show) in [(true, overflow.offset > 0.5), (false, overflow.offset < max - 0.5)] {
+        if !show {
+            continue;
+        }
+        let r = if left {
+            Rect::from_min_size(inner.left_top(), vec2(18.0, inner.height()))
+        } else {
+            Rect::from_min_size(pos2(inner.right() - 18.0, inner.top()), vec2(18.0, inner.height()))
+        };
+        let resp = ui.interact(r, ui.id().with(("ribbon_scroll_arrow", left)), Sense::click());
+        ui.painter().rect_filled(r, 4.0, if resp.hovered() { t.hover } else { t.ribbon });
+        ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, t.ribbon_border), StrokeKind::Inside);
+        icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(14.0, 14.0)), if left { Icon::Left } else { Icon::Right }, t.text);
+        let name = if left { "Scroll ribbon left" } else { "Scroll ribbon right" };
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+        if resp.on_hover_text(crate::i18n::current(ui.ctx()).tr(name)).clicked() {
+            target = Some(if left { overflow.offset - step } else { overflow.offset + step });
+        }
+    }
+    if let Some(x) = target {
+        scroll.state.offset.x = x.clamp(0.0, max);
+        scroll.state.store(ui.ctx(), scroll.id);
+        ui.ctx().request_repaint();
+    }
 }
 
 /// The File tab opens the Backstage view (New, Open, Info, Save As, Print, Export, Options…), like
@@ -264,6 +403,11 @@ fn file_menu(app: &mut SheetApp, ui: &mut Ui) {
     let file = ui.add(egui::Button::new(label).frame(false).min_size(vec2(46.0, 30.0)));
     if file.clicked() {
         app.open_backstage(crate::backstage::Page::Home);
+    }
+    if app.keytips.prefix() == Some("")
+        && let Some(sequence) = keytip_table::tab_sequence("File")
+    {
+        keytip(app, ui, sequence, pos2(file.rect.center().x, file.rect.bottom() - 1.0));
     }
 }
 
@@ -278,6 +422,8 @@ fn theme_choices(app: &mut SheetApp, ui: &mut Ui) {
         }
     }
 }
+
+const CONTEXTUAL_TABS: [&str; 3] = ["Table Design", "Chart Design", crate::paper_view::TAB];
 
 fn contextual_tabs(app: &SheetApp) -> Vec<&'static str> {
     let mut v = Vec::new();
@@ -320,6 +466,23 @@ fn theme_colors(app: &SheetApp) -> [u32; 12] {
 /// Runs a command from a ribbon click (menu-style: no params may open a dialog).
 fn act(app: &mut SheetApp, id: &str, params: serde_json::Value) {
     app.run_or_alert(id, params);
+}
+
+/// How many cells Formulas › Error Checking › Circular References lists.
+const CIRCULAR_MENU_LIMIT: usize = 100;
+
+/// The cell listed for each circular reference, for the Circular References submenu: each once, in the order
+/// the calculation found them, as (sheet index, cell, "Sheet!A1").
+fn circular_references(app: &SheetApp) -> Vec<(usize, String, String)> {
+    let Some(d) = app.session.active() else { return Vec::new() };
+    let mut seen = std::collections::HashSet::new();
+    d.calc
+        .circular
+        .iter()
+        .filter(|k| seen.insert(**k))
+        .filter_map(|(si, c)| d.wb.sheet(*si).map(|sh| (*si, c.a1(), format!("{}!{}", gridcraft_engine::formula::quote_sheet(&sh.name), c.a1()))))
+        .take(CIRCULAR_MENU_LIMIT)
+        .collect()
 }
 
 /// Keytips are painted, not focusable widgets: the grid retains keyboard focus.
@@ -382,8 +545,6 @@ pub(crate) enum ComboResult {
     None,
     /// A row was applied: clicked or Enter on the highlighted row.
     Picked(String),
-    /// Enter with free text that matches no row (e.g. a custom font size).
-    Entered(String),
 }
 
 /// Excel-style dropdown: a filter field (type to narrow the list) plus arrow/Enter selection.
@@ -396,6 +557,26 @@ pub(crate) fn editable_combo(
     current_value: &str,
     items: &[(&str, String)],
     forced: bool,
+) -> ComboResult {
+    combo_popup(ui, anchor, salt, current_value, items, forced, true, None)
+}
+
+/// The dropdown of [`editable_combo`] without the filter field: the whole list, picked by click or
+/// arrows and Enter. It drops directly below `under` and is as wide as it, like Excel's Font Size
+/// list under its box.
+fn list_combo(ui: &mut Ui, anchor: &egui::Response, under: Rect, salt: &'static str, current_value: &str, items: &[(&str, String)]) -> ComboResult {
+    combo_popup(ui, anchor, salt, current_value, items, false, false, Some(under))
+}
+
+fn combo_popup(
+    ui: &mut Ui,
+    anchor: &egui::Response,
+    salt: &'static str,
+    current_value: &str,
+    items: &[(&str, String)],
+    forced: bool,
+    filter: bool,
+    under: Option<Rect>,
 ) -> ComboResult {
     let popup_id = anchor.id.with("popup");
     let state_id = anchor.id.with(salt).with("__combo_state");
@@ -410,7 +591,12 @@ pub(crate) fn editable_combo(
     }
     st.was_open = open_now;
     let mut result = ComboResult::None;
-    egui::Popup::menu(anchor).open_memory(popup_command(forced, anchor.clicked())).show(|ui| {
+    let mut popup = egui::Popup::menu(anchor).open_memory(popup_command(forced, anchor.clicked()));
+    if let Some(r) = under {
+        popup = popup.anchor(r).align(egui::RectAlign::BOTTOM_START).width(r.width());
+    }
+    let row_w = under.map_or(220.0, |r| r.width() - 12.0);
+    popup.show(|ui| {
         // Arrows and Enter navigate the list, not the filter field's cursor. Capture them and
         // strip them from the input so the TextEdit never sees them.
         let (mut down, mut up, mut enter) = (false, false, false);
@@ -426,21 +612,24 @@ pub(crate) fn editable_combo(
                 });
             });
         }
-        let text_id = anchor.id.with(salt).with("__combo_text");
-        let te = ui.add(egui::TextEdit::singleline(&mut st.text).id(text_id).desired_width(220.0).hint_text("Type to filter…"));
-        if open_now && !te.has_focus() {
-            ui.ctx().memory_mut(|m| m.request_focus(text_id));
-            // Select all once focus lands so typing replaces the filter.
-            if let Some(mut s) = egui::text_edit::TextEditState::load(ui.ctx(), text_id) {
-                let len = st.text.chars().count();
-                s.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(len))));
-                s.store(ui.ctx(), text_id);
+        if filter {
+            let text_id = anchor.id.with(salt).with("__combo_text");
+            let te = ui.add(egui::TextEdit::singleline(&mut st.text).id(text_id).desired_width(220.0).hint_text("Type to filter…"));
+            if open_now && !te.has_focus() {
+                ui.ctx().memory_mut(|m| m.request_focus(text_id));
+                // Select all once focus lands so typing replaces the filter.
+                if let Some(mut s) = egui::text_edit::TextEditState::load(ui.ctx(), text_id) {
+                    let len = st.text.chars().count();
+                    s.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(len))));
+                    s.store(ui.ctx(), text_id);
+                }
             }
         }
         let lower = st.text.to_lowercase();
         let filtered: Vec<usize> = items.iter().enumerate().filter(|(_, (_, d))| d.to_lowercase().contains(&lower)).map(|(i, _)| i).collect();
         if !filtered.is_empty() {
             let n = filtered.len() as i32;
+            st.sel = st.sel.clamp(0, n - 1);
             if down {
                 st.sel = (st.sel + 1).rem_euclid(n);
             }
@@ -448,27 +637,42 @@ pub(crate) fn editable_combo(
                 st.sel = (st.sel - 1).rem_euclid(n);
             }
         }
-        if enter {
-            if filtered.is_empty() {
-                let t = st.text.trim().to_string();
-                if !t.is_empty() {
-                    result = ComboResult::Entered(t);
-                }
-            } else {
-                let idx = filtered[st.sel.clamp(0, filtered.len() as i32 - 1) as usize];
-                result = ComboResult::Picked(items[idx].0.to_string());
-            }
+        if enter && !filtered.is_empty() {
+            let idx = filtered[st.sel.clamp(0, filtered.len() as i32 - 1) as usize];
+            result = ComboResult::Picked(items[idx].0.to_string());
         }
-        ui.separator();
-        egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-            for i in &filtered {
+        if filter {
+            ui.separator();
+        }
+        let button_h = ui.spacing().interact_size.y.max(20.0);
+        let spacing = ui.spacing().item_spacing.y;
+        let n = filtered.len() as f32;
+
+        let content_h = n * button_h + (n - 1.0).max(0.0) * spacing;
+
+        let max_rows = 9.0_f32;
+        let max_h = max_rows * button_h + (max_rows - 1.0) * spacing;
+
+        let desired_h = content_h.min(max_h);
+
+        ui.set_min_height(desired_h);
+
+        egui::ScrollArea::vertical().max_height(desired_h).show(ui, |ui| {
+            for (pos, i) in filtered.iter().enumerate() {
                 let (value, disp) = &items[*i];
-                let row = ui.add(egui::Button::selectable(*i as i32 == st.sel, egui::RichText::new(disp)).min_size(vec2(220.0, 20.0)));
+
+                let row = ui.add(egui::Button::selectable(pos as i32 == st.sel, egui::RichText::new(disp)).min_size(vec2(row_w, 20.0)));
+
+                if (down || up) && pos as i32 == st.sel && !ui.clip_rect().contains_rect(row.rect) {
+                    row.scroll_to_me(Some(if down { egui::Align::Max } else { egui::Align::Min }));
+                }
+
                 if row.clicked() {
                     result = ComboResult::Picked(value.to_string());
                 }
+
                 if row.hovered() {
-                    st.sel = *i as i32;
+                    st.sel = pos as i32;
                 }
             }
         });
@@ -480,6 +684,21 @@ pub(crate) fn editable_combo(
     result
 }
 
+/// The Accounting Number Format dropdown: label and the code Excel applies for that symbol.
+const ACCOUNTING_SYMBOLS: &[(&str, &str)] = &[
+    ("$ English (United States)", "_(\"$\"* #,##0.00_);_(\"$\"* \\(#,##0.00\\);_(\"$\"* \"-\"??_);_(@_)"),
+    ("£ English (United Kingdom)", "_-[$£-809]* #,##0.00_-;-[$£-809]* #,##0.00_-;_-[$£-809]* \"-\"??_-;_-@_-"),
+    ("€ Euro", "_-[$€-x-euro2] * #,##0.00_-;-[$€-x-euro2] * #,##0.00_-;_-[$€-x-euro2] * \"-\"??_-;_-@_-"),
+    ("¥ Japanese", "_-[$¥-411]* #,##0_-;-[$¥-411]* #,##0_-;_-[$¥-411]* \"-\"_-;_-@_-"),
+    ("¥ Chinese (PRC)", "_-[$¥-804]* #,##0.00_-;-[$¥-804]* #,##0.00_-;_-[$¥-804]* \"-\"??_-;_-@_-"),
+    ("₹ English (India)", "_-[$₹-4009]* #,##0.00_-;-[$₹-4009]* #,##0.00_-;_-[$₹-4009]* \"-\"??_-;_-@_-"),
+    ("CHF German (Switzerland)", "_-[$CHF-807]* #,##0.00_-;-[$CHF-807]* #,##0.00_-;_-[$CHF-807]* \"-\"??_-;_-@_-"),
+    ("Rp Indonesian", "_-[$Rp-421]* #,##0.00_-;-[$Rp-421]* #,##0.00_-;_-[$Rp-421]* \"-\"??_-;_-@_-"),
+    ("₩ Korean", "_-[$₩-412]* #,##0_-;-[$₩-412]* #,##0_-;_-[$₩-412]* \"-\"_-;_-@_-"),
+    ("R$ Portuguese (Brazil)", "_-[$R$-416]* #,##0.00_-;-[$R$-416]* #,##0.00_-;_-[$R$-416]* \"-\"??_-;_-@_-"),
+    ("₽ Russian", "_-[$₽-419]* #,##0.00_-;-[$₽-419]* #,##0.00_-;_-[$₽-419]* \"-\"??_-;_-@_-"),
+];
+
 fn menu_items(app: &mut SheetApp, ui: &mut Ui, items: &[(&str, &str, serde_json::Value)]) {
     for (label, id, p) in items {
         if *label == "-" {
@@ -487,7 +706,7 @@ fn menu_items(app: &mut SheetApp, ui: &mut Ui, items: &[(&str, &str, serde_json:
             continue;
         }
         let lang = app.ui.language;
-        let response = ui.add(egui::Button::new(lang.tr(label)).frame(false).min_size(vec2(220.0, 22.0)));
+        let response = ui.add(egui::Button::new(lang.tr(label)).frame_when_inactive(false).min_size(vec2(220.0, 22.0)));
         if let Some(sequence) = keytip_table::item_letter(app.keytips.prefix().unwrap_or_default(), id) {
             keytip(app, ui, sequence, pos2(response.rect.right() - 10.0, response.rect.center().y));
         }
@@ -507,7 +726,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let st = active_style(app);
     // Clipboard
-    let paste = big_button(ui, Icon::Paste, "Paste", "Paste (⌘V)", true);
+    let paste = big_button(ui, Icon::Paste, "Paste", "Paste", true);
     paste.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Paste"));
     for sequence in
         keytip_table::group_extension(app.keytips.prefix().unwrap_or_default(), &["edit.paste", "edit.pasteSpecial", "dialog:pasteSpecial"])
@@ -559,18 +778,19 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
         );
     });
     ui.vertical(|ui| {
-        let __k = icon_button(ui, Icon::Cut, t.text, "Cut (⌘X)", vec2(26.0, 23.0));
+        let __k = icon_button(ui, Icon::Cut, t.text, "Cut", vec2(26.0, 23.0));
         control_keytip(app, ui, &__k, "edit.cut");
         if __k.clicked() {
             app.copy_to_clipboard(ui.ctx(), "edit.cut");
         }
-        let __k = icon_button(ui, Icon::Copy, t.text, "Copy (⌘C)", vec2(26.0, 23.0));
+        let __k = icon_button(ui, Icon::Copy, t.text, "Copy", vec2(26.0, 23.0));
         control_keytip(app, ui, &__k, "edit.copy");
         if __k.clicked() {
             app.copy_to_clipboard(ui.ctx(), "edit.copy");
         }
         let fp_on = app.session.format_painter.is_some();
         let fp = toggle_button(ui, Icon::Brush, fp_on, "Format Painter (double-click to keep it on)");
+        fp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), fp_on, "Format Painter"));
         control_keytip(app, ui, &fp, "edit.formatPainter");
         if fp.double_clicked() {
             act(app, "edit.formatPainter", json!({"sticky": true}));
@@ -600,17 +820,17 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
             }
         });
         ui.horizontal(|ui| {
-            let __k = toggle_button(ui, Icon::Bold, st.font.bold, "Bold (⌘B)");
+            let __k = toggle_button(ui, Icon::Bold, st.font.bold, "Bold");
             control_keytip(app, ui, &__k, "home.bold");
             if __k.clicked() {
                 act(app, "home.bold", json!({}));
             }
-            let __k = toggle_button(ui, Icon::Italic, st.font.italic, "Italic (⌘I)");
+            let __k = toggle_button(ui, Icon::Italic, st.font.italic, "Italic");
             control_keytip(app, ui, &__k, "home.italic");
             if __k.clicked() {
                 act(app, "home.italic", json!({}));
             }
-            let (u, ua) = split_button(ui, Icon::Underline, None, "Underline (⌘U)");
+            let (u, ua) = split_button(ui, Icon::Underline, None, "Underline");
             control_keytip(app, ui, &ua, "home.underline");
             if u {
                 act(app, "home.underline", json!({}));
@@ -671,15 +891,18 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                 act(app, "home.fillColor", json!({"color": fill}));
             }
             let forced = invoke(app, "home.fillColor");
-            egui::Popup::menu(&fa).open_memory(popup_command(forced, fa.clicked())).show(|ui| {
-                if let Some(c) = color_palette(ui, &theme_colors(app), "No Fill") {
-                    if c != "none" {
-                        app.grid.last_fill = c.clone();
+            egui::Popup::menu(&fa)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .open_memory(popup_command(forced, fa.clicked()))
+                .show(|ui| {
+                    if let Some(c) = color_palette(ui, &theme_colors(app), "No Fill") {
+                        if c != "none" {
+                            app.grid.last_fill = c.clone();
+                        }
+                        act(app, "home.fillColor", json!({"color": c}));
+                        ui.close();
                     }
-                    act(app, "home.fillColor", json!({"color": c}));
-                    ui.close();
-                }
-            });
+                });
             let fc = app.grid.last_font_color.clone();
             let fc_c = gridcraft_engine::model::Color::from_hex(&fc).and_then(|c| c.resolve(&Default::default())).map(theme::color32);
             let (c, ca) = split_button(ui, Icon::FontColor, fc_c, "Font Color");
@@ -688,15 +911,18 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                 act(app, "home.fontColor", json!({"color": fc}));
             }
             let forced = invoke(app, "home.fontColor");
-            egui::Popup::menu(&ca).open_memory(popup_command(forced, ca.clicked())).show(|ui| {
-                if let Some(c) = color_palette(ui, &theme_colors(app), "Automatic") {
-                    if c != "none" {
-                        app.grid.last_font_color = c.clone();
+            egui::Popup::menu(&ca)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .open_memory(popup_command(forced, ca.clicked()))
+                .show(|ui| {
+                    if let Some(c) = color_palette(ui, &theme_colors(app), "Automatic") {
+                        if c != "none" {
+                            app.grid.last_font_color = c.clone();
+                        }
+                        act(app, "home.fontColor", json!({"color": if c == "none" { "auto".to_string() } else { c }}));
+                        ui.close();
                     }
-                    act(app, "home.fontColor", json!({"color": if c == "none" { "auto".to_string() } else { c }}));
-                    ui.close();
-                }
-            });
+                });
         });
     });
     sep(ui);
@@ -795,30 +1021,10 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                 act(app, "home.accounting", json!({}));
             }
             egui::Popup::menu(&ca).show(|ui| {
-                menu_items(
-                    app,
-                    ui,
-                    &[
-                        (
-                            "$ English (United States)",
-                            "home.numberFormat",
-                            json!({"code": "_(\"$\"* #,##0.00_);_(\"$\"* \\(#,##0.00\\);_(\"$\"* \"-\"??_);_(@_)"}),
-                        ),
-                        (
-                            "£ English (United Kingdom)",
-                            "home.numberFormat",
-                            json!({"code": "_-[$£-809]* #,##0.00_-;-[$£-809]* #,##0.00_-;_-[$£-809]* \"-\"??_-;_-@_-"}),
-                        ),
-                        (
-                            "€ Euro",
-                            "home.numberFormat",
-                            json!({"code": "_-[$€-x-euro2] * #,##0.00_-;-[$€-x-euro2] * #,##0.00_-;_-[$€-x-euro2] * \"-\"??_-;_-@_-"}),
-                        ),
-                        ("¥ Japanese", "home.numberFormat", json!({"code": "_-[$¥-411]* #,##0_-;-[$¥-411]* #,##0_-;_-[$¥-411]* \"-\"_-;_-@_-"})),
-                        ("-", "", json!(null)),
-                        ("More Accounting Formats…", "dialog:formatCells", json!({"tab": "Number"})),
-                    ],
-                );
+                let mut items: Vec<_> = ACCOUNTING_SYMBOLS.iter().map(|(label, code)| (*label, "home.numberFormat", json!({"code": code}))).collect();
+                items.push(("-", "", json!(null)));
+                items.push(("More Accounting Formats…", "dialog:formatCells", json!({"tab": "Number"})));
+                menu_items(app, ui, &items);
             });
             let __k = icon_button(ui, Icon::Percent, t.text, "Percent Style", vec2(24.0, 23.0));
             control_keytip(app, ui, &__k, "home.percent");
@@ -923,6 +1129,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
         if format_keys {
             format_popup = format_popup.open_memory(egui::SetOpenCommand::Bool(true));
         }
+        let protect_label = if app.active_sheet_protected() { "Unprotect Sheet…" } else { "Protect Sheet…" };
         format_popup.show(|ui| {
             menu_items(
                 app,
@@ -944,7 +1151,7 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
                     ("Rename Sheet", "dialog:renameSheet", json!({})),
                     ("Move or Copy Sheet…", "dialog:moveSheet", json!({})),
                     ("-", "", json!(null)),
-                    ("Protect Sheet…", "dialog:protectSheet", json!({})),
+                    (protect_label, "dialog:protectSheet", json!({})),
                     ("Lock Cell", "home.lockCell", json!({})),
                     ("Format Cells…", "dialog:formatCells", json!({})),
                 ],
@@ -955,22 +1162,12 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
     // Editing
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
-            let (s, sa) = split_button(ui, Icon::Sum, None, "AutoSum (⌘⇧T)");
+            let (s, sa) = split_button(ui, Icon::Sum, None, "AutoSum");
             control_keytip(app, ui, &sa, "formulas.autoSum");
             if s {
                 act(app, "formulas.autoSum", json!({}));
             }
-            egui::Popup::menu(&sa).show(|ui| {
-                for f in ["SUM", "AVERAGE", "COUNT", "MAX", "MIN"] {
-                    if ui.button(f).clicked() {
-                        act(app, "formulas.autoSum", json!({"function": f}));
-                    }
-                }
-                ui.separator();
-                if ui.button("More Functions…").clicked() {
-                    app.open_dialog("insertFunction", json!({}));
-                }
-            });
+            egui::Popup::menu(&sa).show(|ui| autosum_menu(app, ui));
         });
         let fill = small_button(ui, Icon::FillDown, "", "Fill", true);
         for sequence in keytip_table::group_extension(
@@ -1063,6 +1260,20 @@ fn home(app: &mut SheetApp, ui: &mut Ui) {
     });
 }
 
+/// The AutoSum menu (Home › Editing and Formulas › Function Library): a function, or the Insert
+/// Function dialog.
+fn autosum_menu(app: &mut SheetApp, ui: &mut Ui) {
+    for f in ["SUM", "AVERAGE", "COUNT", "MAX", "MIN"] {
+        if ui.button(f).clicked() {
+            act(app, "formulas.autoSum", json!({"function": f}));
+        }
+    }
+    ui.separator();
+    if ui.button("More Functions…").clicked() {
+        app.open_dialog("insertFunction", json!({}));
+    }
+}
+
 fn font_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
     let name = st.font.name.clone();
     let resp = ui.add_sized([150.0, 24.0], egui::Button::new(egui::RichText::new(&name).font(theme::ui_font(12.5))));
@@ -1094,25 +1305,68 @@ pub const FONTS: &[&str] = &[
     "Verdana",
 ];
 
+/// Excel's size box: type a size and press Enter to apply exactly that number (the command refuses
+/// sizes outside 1 to 409), Escape or clicking away reverts; the arrow opens the standard sizes.
 fn size_combo(app: &mut SheetApp, ui: &mut Ui, st: &Style) {
+    let t = Tokens::get(ui.ctx());
     let size = st.font.size;
-    let label = if size.fract() == 0.0 { format!("{}", size as i32) } else { format!("{size}") };
-    let resp = ui.add_sized([52.0, 24.0], egui::Button::new(egui::RichText::new(&label).font(theme::ui_font(12.5))));
+    let current = if size.fract() == 0.0 { format!("{}", size as i32) } else { format!("{size}") };
+    let field = egui::Id::new("gridcraft.font_size_box");
+    let draft = field.with("draft");
+    let mut text = ui.data_mut(|d| d.get_temp::<String>(draft)).unwrap_or_else(|| current.clone());
+    // One frame like the Font name box beside it (same fill, border, height and corners), with the
+    // text field and the dropdown arrow inside it, as in Excel.
+    let (frame, _) = ui.allocate_exact_size(vec2(52.0, 24.0), egui::Sense::hover());
+    // Painted once the field's focus and hover are known, but beneath the field and the arrow.
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let text_rect = Rect::from_min_max(frame.min, egui::pos2(frame.right() - 16.0, frame.bottom()));
+    let arrow_rect = Rect::from_min_max(egui::pos2(frame.right() - 16.0, frame.top() + 1.0), egui::pos2(frame.right() - 1.0, frame.bottom() - 1.0));
+    let mut field_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(text_rect.shrink2(vec2(6.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let out = egui::TextEdit::singleline(&mut text)
+        .id(field)
+        .font(theme::ui_font(12.5))
+        .frame(egui::Frame::NONE)
+        .desired_width(text_rect.width() - 12.0)
+        .show(&mut field_ui);
+    let resp = out.response;
     control_keytip(app, ui, &resp, "home.fontSize");
-    let forced = invoke(app, "home.fontSize");
+    if invoke(app, "home.fontSize") {
+        ui.memory_mut(|m| m.request_focus(field));
+    }
+    if resp.gained_focus() {
+        // Typing replaces the size, as in Excel, whether the box was clicked or reached by keytip.
+        let mut state = out.state;
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+        state.store(ui.ctx(), field);
+    }
+    if resp.lost_focus() {
+        ui.data_mut(|d| d.remove::<String>(draft));
+        // Consume the Enter so the grid behind does not also move the active cell down.
+        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+            && let Some(v) = text.trim().parse::<f64>().ok().filter(|v| v.is_finite())
+        {
+            act(app, "home.fontSize", json!({"size": v}));
+        }
+    } else if resp.has_focus() {
+        ui.data_mut(|d| d.insert_temp(draft, text));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(draft));
+    }
+    let mut arrow_ui = ui.new_child(egui::UiBuilder::new().max_rect(arrow_rect));
+    let arrow = icon_button(&mut arrow_ui, Icon::Chevron, t.text_dim, "Font Size", arrow_rect.size());
+    let visuals = ui.style().visuals.clone();
+    let looks = if resp.has_focus() || ui.rect_contains_pointer(frame) { &visuals.widgets.hovered } else { &visuals.widgets.inactive };
+    let stroke = if resp.has_focus() { visuals.selection.stroke } else { looks.bg_stroke };
+    ui.painter().set(bg, egui::epaint::RectShape::new(frame, looks.corner_radius, looks.weak_bg_fill, stroke, egui::StrokeKind::Inside));
+    arrow.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Font Size"));
     let sizes = [8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 36.0, 48.0, 72.0];
     let labels: Vec<String> = sizes.iter().map(|s| format!("{}", *s as i32)).collect();
     let items: Vec<(&str, String)> = labels.iter().map(|s| (s.as_str(), s.clone())).collect();
-    let current = if size.fract() == 0.0 { format!("{}", size as i32) } else { format!("{size}") };
-    let mut apply = |s: &str| {
-        if let Ok(v) = s.parse::<f32>() {
-            act(app, "home.fontSize", json!({"size": v}));
-        }
-    };
-    match editable_combo(ui, &resp, "size", &current, &items, forced) {
-        ComboResult::Picked(value) => apply(&value),
-        ComboResult::Entered(text) => apply(&text),
-        _ => {}
+    if let ComboResult::Picked(value) = list_combo(ui, &arrow, frame, "size", &current, &items)
+        && let Ok(v) = value.parse::<f32>()
+    {
+        act(app, "home.fontSize", json!({"size": v}));
     }
 }
 
@@ -1242,7 +1496,7 @@ fn table_gallery(app: &mut SheetApp, ui: &mut Ui, cmd: &str) {
                 let (r, resp) = ui.allocate_exact_size(vec2(54.0, 38.0), Sense::click());
                 paint_table_swatch(ui, r, &wb, &name);
                 if resp.hovered() {
-                    ui.painter().rect_stroke(r.expand(1.5), 2.0, Stroke::new(2.0, Color32::from_rgb(0xE8, 0x7D, 0x2B)), StrokeKind::Outside);
+                    ui.painter().rect_stroke(r.expand(1.5), 2.0, Stroke::new(2.0, Tokens::get(ui.ctx()).cat(Cat::Orange)), StrokeKind::Outside);
                 }
                 if resp.on_hover_text(&name).clicked() {
                     act(app, cmd, json!({"style": name}));
@@ -1260,7 +1514,8 @@ fn paint_table_swatch(ui: &Ui, r: Rect, wb: &gridcraft_engine::model::Workbook, 
     let lk = gridcraft_engine::tables::look(style);
     let res = |c: Option<gridcraft_engine::model::Color>| c.and_then(|c| c.resolve(&wb.theme)).map(theme::color32);
     let p = ui.painter();
-    p.rect_filled(r, 0.0, Color32::WHITE);
+    let t = Tokens::get(ui.ctx());
+    p.rect_filled(r, 0.0, t.grid_bg);
     let rows = 5;
     let rh = r.height() / rows as f32;
     for i in 0..rows {
@@ -1280,14 +1535,15 @@ fn paint_table_swatch(ui: &Ui, r: Rect, wb: &gridcraft_engine::model::Workbook, 
         }
         for k in 0..3 {
             let x = rr.left() + 4.0 + k as f32 * (r.width() - 8.0) / 3.0;
-            let col = if i == 0 { res(Some(lk.header_font)).unwrap_or(Color32::BLACK) } else { Color32::from_gray(120) };
+            let col = if i == 0 { res(Some(lk.header_font)).unwrap_or(t.cell_text) } else { t.sheet_control_border };
             p.line_segment([pos2(x, rr.center().y), pos2(x + 10.0, rr.center().y)], Stroke::new(1.0, col));
         }
     }
-    p.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_gray(210)), StrokeKind::Inside);
+    p.rect_stroke(r, 0.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
 }
 
 fn cell_style_gallery(app: &mut SheetApp, ui: &mut Ui) {
+    let t = Tokens::get(ui.ctx());
     ui.set_width(520.0);
     let Some(wb) = app.session.active().map(|d| d.wb.clone()) else { return };
     let groups: &[(&str, &[&str])] = &[
@@ -1337,17 +1593,17 @@ fn cell_style_gallery(app: &mut SheetApp, ui: &mut Ui) {
                     .resolve(&wb.theme)
                     .filter(|_| st.fill.pattern != gridcraft_engine::model::PatternType::None)
                     .map(theme::color32)
-                    .unwrap_or(Color32::WHITE);
+                    .unwrap_or(t.grid_bg);
                 ui.painter().rect_filled(r, 0.0, fill);
-                ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_gray(210)), StrokeKind::Inside);
+                ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
                 if !st.borders.bottom.is_none() {
-                    let c = st.borders.bottom.color.resolve(&wb.theme).map(theme::color32).unwrap_or(Color32::BLACK);
+                    let c = st.borders.bottom.color.resolve(&wb.theme).map(theme::color32).unwrap_or(t.cell_text);
                     ui.painter().line_segment(
                         [r.left_bottom() + vec2(0.0, -1.5), r.right_bottom() + vec2(0.0, -1.5)],
                         Stroke::new(st.borders.bottom.style.width(), c),
                     );
                 }
-                let col = st.font.color.resolve(&wb.theme).map(theme::color32).unwrap_or(Color32::BLACK);
+                let col = st.font.color.resolve(&wb.theme).map(theme::color32).unwrap_or(t.cell_text);
                 let fam = theme::cell_family(&st.font.name, st.font.bold, st.font.italic);
                 ui.painter().text(
                     r.left_center() + vec2(4.0, 0.0),
@@ -1357,7 +1613,7 @@ fn cell_style_gallery(app: &mut SheetApp, ui: &mut Ui) {
                     col,
                 );
                 if resp.hovered() {
-                    ui.painter().rect_stroke(r.expand(1.5), 2.0, Stroke::new(2.0, Color32::from_rgb(0xE8, 0x7D, 0x2B)), StrokeKind::Outside);
+                    ui.painter().rect_stroke(r.expand(1.5), 2.0, Stroke::new(2.0, Tokens::get(ui.ctx()).cat(Cat::Orange)), StrokeKind::Outside);
                 }
                 if resp.clicked() {
                     act(app, "home.cellStyle", json!({"name": n}));
@@ -1377,7 +1633,7 @@ fn insert(app: &mut SheetApp, ui: &mut Ui) {
     if __k.clicked() {
         act(app, "insert.pivotTable", json!({}));
     }
-    let __k = big_button(ui, Icon::Table, "Table", "Table (⌘T)", false);
+    let __k = big_button(ui, Icon::Table, "Table", "Table", false);
     control_keytip(app, ui, &__k, "insert.table");
     if __k.clicked() {
         act(app, "insert.table", json!({}));
@@ -1436,13 +1692,8 @@ fn insert(app: &mut SheetApp, ui: &mut Ui) {
     let __k = big_button(ui, Icon::Chart, "Recommended\nCharts", "Recommended Charts", false);
     control_keytip(app, ui, &__k, "insert.recommendedCharts");
     if __k.clicked() {
-        match app.run("insert.recommendedCharts", json!({})) {
-            // The new chart is selected, as after inserting any other object (see insert.chart
-            // in dialogs.rs) — otherwise the prior cell/range selection is left in place, and
-            // Del right after inserting deletes the source data instead of the chart.
-            Ok(r) => app.selected_chart = r.get("chart").and_then(serde_json::Value::as_u64).and_then(|id| u32::try_from(id).ok()),
-            Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
-        }
+        // Menu-style: with no chart type, run_or_alert opens the Insert Chart dialog.
+        act(app, "insert.recommendedCharts", json!({}));
     }
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
@@ -1457,6 +1708,7 @@ fn insert(app: &mut SheetApp, ui: &mut Ui) {
                         ("100% Stacked Column", "column", "stacked100"),
                         ("Clustered Bar", "bar", ""),
                         ("Stacked Bar", "bar", "stacked"),
+                        ("100% Stacked Bar", "bar", "stacked100"),
                     ],
                 ),
                 (
@@ -1469,6 +1721,7 @@ fn insert(app: &mut SheetApp, ui: &mut Ui) {
                         ("Stacked Line", "line", "stacked"),
                         ("Area", "area", ""),
                         ("Stacked Area", "area", "stacked"),
+                        ("100% Stacked Area", "area", "stacked100"),
                     ],
                 ),
                 (Icon::ChartPie, "Pie or Doughnut", "insert.chart.pie", vec![("Pie", "pie", ""), ("Doughnut", "doughnut", "")]),
@@ -1542,7 +1795,7 @@ fn insert(app: &mut SheetApp, ui: &mut Ui) {
         act(app, "insert.checkbox", json!({}));
     }
     sep(ui);
-    let __k = big_button(ui, Icon::Link, "Link", "Insert Link (⌘K)", false);
+    let __k = big_button(ui, Icon::Link, "Link", "Insert Link", false);
     control_keytip(app, ui, &__k, "dialog:insertLink");
     if __k.clicked() {
         app.open_dialog("insertLink", json!({}));
@@ -1663,7 +1916,29 @@ fn page_layout(app: &mut SheetApp, ui: &mut Ui) {
     let s = big_button(ui, Icon::Paper, "Size", "Paper Size", true);
     control_keytip(app, ui, &s, "pageLayout.size");
     egui::Popup::menu(&s).show(|ui| {
-        for p in ["Letter", "Legal", "Tabloid", "Executive", "A3", "A4", "A5"] {
+        // B4/B5/B6 are the JIS sizes Japanese Excel uses; the ISO ones stay selectable by name.
+        for p in [
+            "Letter",
+            "Legal",
+            "Tabloid",
+            "Executive",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "B4",
+            "B5",
+            "B6",
+            "Japanese Postcard",
+            "Japanese Double Postcard",
+            "Japanese Envelope #3",
+            "Japanese Envelope #4",
+            "Japanese Envelope Kaku #2",
+            "Japanese Envelope Kaku #3",
+            "B4 (ISO)",
+            "B5 (ISO)",
+            "B6 (ISO)",
+        ] {
             if ui.button(p).clicked() {
                 act(app, "pageLayout.size", json!({"paper": p}));
             }
@@ -1749,17 +2024,20 @@ fn page_layout(app: &mut SheetApp, ui: &mut Ui) {
     }
 }
 
+/// The Formulas tab: Insert Function, AutoSum, the function-category menus (names in the formula
+/// language, descriptions in the interface language), defined names, auditing and calculation.
 fn formulas(app: &mut SheetApp, ui: &mut Ui) {
     let __k = big_button(ui, Icon::Function, "Insert\nFunction", "Insert Function (⇧F3)", false);
     control_keytip(app, ui, &__k, "dialog:insertFunction");
     if __k.clicked() {
         app.open_dialog("insertFunction", json!({}));
     }
-    let s = big_button(ui, Icon::Sum, "AutoSum", "AutoSum", true);
-    control_keytip(app, ui, &s, "formulas.autoSum");
+    let (s, sa) = big_split_button(ui, Icon::Sum, "AutoSum", "AutoSum");
+    control_keytip(app, ui, &sa, "formulas.autoSum");
     if s.clicked() {
         act(app, "formulas.autoSum", json!({}));
     }
+    egui::Popup::menu(&sa).show(|ui| autosum_menu(app, ui));
     for (label, cat, cid) in [
         ("Financial", "Financial", "formulas.financial"),
         ("Logical", "Logical", "formulas.logical"),
@@ -1782,7 +2060,7 @@ fn formulas(app: &mut SheetApp, ui: &mut Ui) {
                         let locale = app.ui.language.formula_locale();
                         let name =
                             app.session.active().map(|d| crate::formula_locale::completion_name(n, locale, &d.wb, d.wb.active_sheet)).unwrap_or(n);
-                        let desc = crate::formula_locale::description(n, locale).unwrap_or_default();
+                        let desc = crate::formula_locale::description(n, locale, app.ui.language).unwrap_or_default();
                         if ui.button(name).on_hover_text(desc).clicked() {
                             app.run_or_alert("formulas.insertFunction", json!({"name": n}));
                             ui.close();
@@ -1805,14 +2083,36 @@ fn formulas(app: &mut SheetApp, ui: &mut Ui) {
             app.open_dialog("defineName", json!({}));
         }
         let use_in = small_button(ui, Icon::Function, "Use in Formula", "Use in Formula", true);
-        anchor_keytip(app, ui, &use_in, &["formulas.pasteName"]);
+        anchor_keytip(app, ui, &use_in, &["dialog:pasteName"]);
         egui::Popup::menu(&use_in).show(|ui| {
-            let names: Vec<String> = app.session.active().map(|d| d.wb.names.iter().map(|n| n.name.clone()).collect()).unwrap_or_default();
-            for n in names {
-                if ui.button(&n).clicked() {
-                    let cur = app.editor.as_ref().map(|e| e.text.clone()).unwrap_or_else(|| "=".into());
-                    app.begin_edit(Some(format!("{cur}{n}")), false);
+            // The menu lists the names Paste Names lists; clicking one runs `formulas.useInFormula`, which puts it at the caret.
+            // Listed when the menu opens, and again only after the workbook changes.
+            let cache = egui::Id::new("gridcraft.use_in_formula_names");
+            let key = app.session.active().map(|d| (d.uid, d.revision, d.wb.active_sheet));
+            let cached = ui.ctx().data(|m| m.get_temp::<(Option<(u64, u64, usize)>, std::sync::Arc<Vec<String>>)>(cache)).filter(|(k, _)| *k == key);
+            let names = match cached {
+                Some((_, names)) => names,
+                None => {
+                    let names: std::sync::Arc<Vec<String>> = std::sync::Arc::new(
+                        app.session
+                            .active()
+                            .map(|d| gridcraft_engine::cmd::formulas::pasteable_names(&d.wb).into_iter().map(|(n, _)| n).collect())
+                            .unwrap_or_default(),
+                    );
+                    ui.ctx().data_mut(|m| m.insert_temp(cache, (key, names.clone())));
+                    names
                 }
+            };
+            for n in names.iter() {
+                if ui.button(n).clicked() {
+                    app.run_or_alert("formulas.useInFormula", json!({"name": n}));
+                }
+            }
+            if !names.is_empty() {
+                ui.separator();
+            }
+            if ui.button(app.ui.language.tr("Paste Names…")).clicked() {
+                app.open_dialog("pasteName", json!({}));
             }
         });
         let __k = small_button(ui, Icon::Table, "Create from Selection", "Create from Selection", false);
@@ -1843,11 +2143,30 @@ fn formulas(app: &mut SheetApp, ui: &mut Ui) {
         if __k.clicked() {
             act(app, "formulas.showFormulas", json!({}));
         }
-        let __k = small_button(ui, Icon::Validation, "Error Checking", "Error Checking", false);
-        control_keytip(app, ui, &__k, "dialog:errorChecking");
-        if __k.clicked() {
+        let (ec, ec_arrow) = small_split_button(ui, Icon::Validation, "Error Checking", "Error Checking");
+        control_keytip(app, ui, &ec, "dialog:errorChecking");
+        if ec.clicked() {
             app.open_dialog("errorChecking", json!({}));
         }
+        egui::Popup::menu(&ec_arrow).show(|ui| {
+            let lang = app.ui.language;
+            if ui.button(format!("{}…", lang.tr("Error Checking"))).clicked() {
+                app.open_dialog("errorChecking", json!({}));
+            }
+            let circular = circular_references(app);
+            ui.add_enabled_ui(!circular.is_empty(), |ui| {
+                ui.menu_button(lang.tr("Circular References"), |ui| {
+                    egui::ScrollArea::vertical().id_salt("circular_references").max_height(400.0).show(ui, |ui| {
+                        for (sheet, cell, label) in circular {
+                            if ui.button(label).clicked() {
+                                act(app, "selection.set", json!({"range": cell, "sheet": sheet}));
+                                app.grid.ensure_visible = true;
+                            }
+                        }
+                    });
+                });
+            });
+        });
         let __k = small_button(ui, Icon::Calc, "Evaluate Formula", "Evaluate Formula", false);
         control_keytip(app, ui, &__k, "dialog:evaluateFormula");
         if __k.clicked() {
@@ -1945,7 +2264,7 @@ fn data(app: &mut SheetApp, ui: &mut Ui) {
     if __k.clicked() {
         app.open_dialog("sort", json!({}));
     }
-    let __k = big_button(ui, Icon::Filter, "Filter", "Filter (⌘⇧F)", false);
+    let __k = big_button(ui, Icon::Filter, "Filter", "Filter", false);
     control_keytip(app, ui, &__k, "data.filter");
     if __k.clicked() {
         act(app, "data.filter", json!({}));
@@ -1961,6 +2280,11 @@ fn data(app: &mut SheetApp, ui: &mut Ui) {
         if __k.clicked() {
             act(app, "data.reapply", json!({}));
         }
+        let __k = small_button(ui, Icon::Filter, "Advanced", "Advanced Filter", false);
+        control_keytip(app, ui, &__k, "dialog:advancedFilter");
+        if __k.clicked() {
+            app.open_dialog("advancedFilter", json!({}));
+        }
     });
     sep(ui);
     let __k = big_button(ui, Icon::TextColumns, "Text to\nColumns", "Text to Columns", false);
@@ -1968,7 +2292,7 @@ fn data(app: &mut SheetApp, ui: &mut Ui) {
     if __k.clicked() {
         app.open_dialog("textToColumns", json!({}));
     }
-    let __k = big_button(ui, Icon::FillDown, "Flash\nFill", "Flash Fill (⌘E)", false);
+    let __k = big_button(ui, Icon::FillDown, "Flash\nFill", "Flash Fill", false);
     control_keytip(app, ui, &__k, "edit.flashFill");
     if __k.clicked() {
         act(app, "edit.flashFill", json!({}));
@@ -2038,6 +2362,9 @@ fn data(app: &mut SheetApp, ui: &mut Ui) {
         }
         if small_button(ui, Icon::Minus, "Hide Detail", "Hide Detail", false).clicked() {
             act(app, "data.hideDetail", json!({}));
+        }
+        if small_button(ui, Icon::Settings, "Settings", "Outline Settings", false).clicked() {
+            app.open_dialog("outlineSettings", json!({}));
         }
     });
     sep(ui);
@@ -2118,11 +2445,7 @@ fn review(app: &mut SheetApp, ui: &mut Ui) {
     let __k = big_button(ui, Icon::Lock, if protected { "Unprotect\nSheet" } else { "Protect\nSheet" }, "Protect Sheet", false);
     control_keytip(app, ui, &__k, "dialog:protectSheet");
     if __k.clicked() {
-        if protected {
-            app.open_dialog("unprotectSheet", json!({}));
-        } else {
-            app.open_dialog("protectSheet", json!({}));
-        }
+        app.open_dialog("protectSheet", json!({}));
     }
     let __k = big_button(ui, Icon::Book, "Protect\nWorkbook", "Protect Workbook structure", false);
     control_keytip(app, ui, &__k, "review.protectWorkbook");
@@ -2302,10 +2625,10 @@ fn automate(app: &mut SheetApp, ui: &mut Ui) {
 }
 
 fn table_design(app: &mut SheetApp, ui: &mut Ui) {
-    let Some((tname, header, totals, banded, banded_c, first, last, filter)) = app.session.active().and_then(|d| {
+    let Some((tname, header, totals, banded, banded_c, first, last, filter, style)) = app.session.active().and_then(|d| {
         let sh = d.wb.active()?;
         let t = sh.table_at(d.selection.active)?;
-        Some((t.name.clone(), t.header_row, t.totals_row, t.banded_rows, t.banded_cols, t.first_col, t.last_col, t.filter_button))
+        Some((t.name.clone(), t.header_row, t.totals_row, t.banded_rows, t.banded_cols, t.first_col, t.last_col, t.filter_button, t.style.clone()))
     }) else {
         return;
     };
@@ -2318,6 +2641,11 @@ fn table_design(app: &mut SheetApp, ui: &mut Ui) {
             act(app, "table.rename", json!({"table": tname, "name": name}));
         }
     });
+    let __k = big_button(ui, Icon::Table, "Resize\nTable", "Resize Table", false);
+    control_keytip(app, ui, &__k, "dialog:tableResize");
+    if __k.clicked() {
+        app.open_dialog("tableResize", json!({}));
+    }
     sep(ui);
     let __k = big_button(ui, Icon::Duplicates, "Remove\nDuplicates", "Remove Duplicates", false);
     control_keytip(app, ui, &__k, "data.removeDuplicates");
@@ -2359,9 +2687,46 @@ fn table_design(app: &mut SheetApp, ui: &mut Ui) {
         }
     });
     sep(ui);
-    let st = big_button(ui, Icon::FormatTable, "Table\nStyles", "Table Styles", true);
-    anchor_keytip(app, ui, &st, &["table.style"]);
-    egui::Popup::menu(&st).show(|ui| table_gallery(app, ui, "table.style"));
+    table_style_strip(app, ui, &tname, &style);
+}
+
+/// The first page of Excel's Table Styles gallery, drawn in the ribbon. The More arrow opens the
+/// full gallery (Light, Medium, Dark) as a popup.
+const RIBBON_TABLE_STYLES: [&str; 7] =
+    ["TableStyleLight1", "TableStyleLight2", "TableStyleLight3", "TableStyleLight4", "TableStyleLight5", "TableStyleLight6", "TableStyleLight7"];
+
+fn table_style_strip(app: &mut SheetApp, ui: &mut Ui, tname: &str, current: &str) {
+    let t = Tokens::get(ui.ctx());
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        // Borrow the workbook only while painting; the session must be free for `act` afterwards.
+        let clicked = {
+            let Some(d) = app.session.active() else { return };
+            let wb = &d.wb;
+            let mut clicked = None;
+            for name in RIBBON_TABLE_STYLES {
+                let (r, resp) = ui.allocate_exact_size(vec2(52.0, 40.0), Sense::click());
+                paint_table_swatch(ui, r, wb, name);
+                if name == current {
+                    ui.painter().rect_stroke(r.expand(2.5), 2.0, Stroke::new(2.0, t.accent), StrokeKind::Outside);
+                }
+                if resp.hovered() {
+                    ui.painter().rect_stroke(r.expand(1.0), 2.0, Stroke::new(2.0, Color32::from_rgb(0xE8, 0x7D, 0x2B)), StrokeKind::Outside);
+                }
+                if resp.on_hover_text(name).clicked() {
+                    clicked = Some(name);
+                }
+            }
+            clicked
+        };
+        if let Some(name) = clicked {
+            act(app, "table.style", json!({"table": tname, "style": name}));
+        }
+        let more = icon_button(ui, Icon::Chevron, t.text_dim, "More Table Styles", vec2(18.0, 40.0));
+        anchor_keytip(app, ui, &more, &["table.style"]);
+        egui::Popup::menu(&more).show(|ui| table_gallery(app, ui, "table.style"));
+    });
 }
 
 fn chart_design(app: &mut SheetApp, ui: &mut Ui) {
@@ -2529,11 +2894,6 @@ pub fn shortcut(app: &mut SheetApp, key: Key, m: Modifiers) {
     }
 }
 
-#[allow(dead_code)]
-fn unused(_: &Tokens, _: Icon) {
-    let _ = icons::GREEN;
-}
-
 #[cfg(test)]
 mod title_bar_tests {
     use super::*;
@@ -2544,6 +2904,60 @@ mod title_bar_tests {
         let margin = (MAC_TITLE_BAR - MAC_LIGHT) / 2.0;
         let lights_end = MAC_LIGHTS_LEFT + 2.0 * MAC_LIGHT_PITCH + MAC_LIGHT;
         assert_eq!(MAC_CONTENT_LEFT - lights_end, margin);
+    }
+
+    #[test]
+    fn title_fits_between_the_controls() {
+        // Room limited by the nearer side, symmetric about the centre.
+        assert_eq!(title_max_width(500.0, 300.0, 900.0), 2.0 * (200.0 - TITLE_GAP));
+        assert_eq!(title_max_width(500.0, 100.0, 650.0), 2.0 * (150.0 - TITLE_GAP));
+        // Controls overlapping the centre leave no room rather than a negative width.
+        assert_eq!(title_max_width(500.0, 520.0, 900.0), 0.0);
+    }
+
+    /// Lay out a title in a real egui frame, returning (title text, title width, dot width).
+    fn layout_title(title: &str, dirty: bool, max_w: f32) -> (String, f32, f32) {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(theme::font_definitions());
+        let mut out = (String::new(), 0.0, 0.0);
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (galley, dot) = title_galleys(ui.painter(), title, dirty, max_w, Color32::WHITE);
+            // The glyphs actually drawn: `galley.text()` is the untruncated source.
+            let shown = galley.rows.iter().flat_map(|r| r.glyphs.iter().map(|g| g.chr)).collect();
+            out = (shown, galley.size().x, dot.map_or(0.0, |d| d.size().x));
+        });
+        frame.textures_delta.clear(); // nothing consumes the atlas in a headless test
+        out
+    }
+
+    #[test]
+    fn long_title_is_truncated_with_an_ellipsis() {
+        let long = format!("upload-{}-cleaned (1).xlsx", "3FMyNTYg2gDaANiAAACq20AAAAQMBqug".repeat(4));
+        let (text, w, _) = layout_title(&long, false, 300.0);
+        assert!(text.ends_with('…'), "truncated title ends with an ellipsis: {text:?}");
+        assert!(text.chars().count() < long.chars().count());
+        assert!(w <= 300.0, "title stays within its room: {w}");
+    }
+
+    #[test]
+    fn short_title_is_left_whole() {
+        let (text, _, _) = layout_title("Book1.xlsx", false, 300.0);
+        assert_eq!(text, "Book1.xlsx");
+    }
+
+    #[test]
+    fn unsaved_dot_survives_truncation() {
+        let long = "a very long workbook name ".repeat(20);
+        let (text, w, dot_w) = layout_title(&long, true, 200.0);
+        assert!(dot_w > 0.0, "the unsaved marker is laid out");
+        assert!(text.ends_with('…'));
+        assert!(w + dot_w <= 200.0, "title and marker fit together: {}", w + dot_w);
+    }
+
+    #[test]
+    fn no_room_draws_nothing_but_does_not_crash() {
+        let (_, w, _) = layout_title("Book1.xlsx", true, 0.0);
+        assert!(w <= 20.0, "a zero-width slot leaves at most the ellipsis: {w}");
     }
 }
 
@@ -2579,5 +2993,33 @@ fn whole_lines(app: &SheetApp) -> Option<bool> {
         Some(false)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod accounting_symbol_tests {
+    use super::*;
+    use gridcraft_engine::core::{DateSystem, Value};
+    use gridcraft_engine::numfmt::{NumberFormat, format_value};
+
+    #[test]
+    fn accounting_dropdown_offers_the_issue_currencies_with_excel_codes() {
+        // #1063: label, Excel's [$symbol-LCID] tag, and 1234.5 as Excel shows it (fill and the
+        // `_-` padding aside). The yen and won have no minor unit, so their codes show no decimals.
+        for (label, tag, shown) in [
+            ("Rp Indonesian", "[$Rp-421]", "Rp1,234.50"),
+            ("₹ English (India)", "[$₹-4009]", "₹1,234.50"),
+            ("₩ Korean", "[$₩-412]", "₩1,235"),
+            ("¥ Chinese (PRC)", "[$¥-804]", "¥1,234.50"),
+            ("¥ Japanese", "[$¥-411]", "¥1,235"),
+        ] {
+            let code = ACCOUNTING_SYMBOLS.iter().find(|(l, _)| *l == label).map(|(_, c)| *c);
+            let Some(code) = code else { panic!("{label} is not in the Accounting dropdown") };
+            assert!(code.split(';').take(3).all(|section| section.contains(tag)), "{label}: {code}");
+            let out = format_value(&Value::Number(1234.5), &NumberFormat::parse(code), DateSystem::D1900);
+            assert_eq!(out.text.trim(), shown, "{label}");
+            let symbol = tag.trim_start_matches("[$").split('-').next().unwrap_or_default();
+            assert_eq!(out.fill.map(|(c, at)| (c, out.text[..at].trim_start())), Some((' ', symbol)), "{label}");
+        }
     }
 }

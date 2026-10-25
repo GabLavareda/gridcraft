@@ -139,9 +139,10 @@ impl RoundTrip {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileReport {
     pub path: String,
-    /// GridCraft couldn't open the file: its message.
+    /// Opening the file or discovering the requested inputs failed: its message.
     pub error: Option<String>,
-    pub warnings: usize,
+    /// Import warnings, in the order the importer produced them.
+    pub warnings: Vec<String>,
     pub calc: CalcReport,
     pub round_trip: RoundTrip,
 }
@@ -204,67 +205,128 @@ pub fn main(args: &[String]) -> ExitCode {
             Err(_) => return usage(format!("--max-report needs a whole number, not `{n}`")),
         }
     }
-    let files = collect_inputs(&a.positional);
-    let reports: Vec<FileReport> = files
-        .iter()
-        .map(|p| {
-            let path = p.to_string_lossy().into_owned();
-            match gridcraft_engine::io::read_file(&path) {
-                Ok(bytes) => check_bytes(&path, &bytes, &opts),
-                Err(e) => FileReport { path, error: Some(e.to_string()), ..Default::default() },
-            }
-        })
-        .collect();
+    let Discovery { files, failures: mut reports } = collect_inputs(&a.positional);
+    reports.extend(files.iter().map(|p| {
+        let path = p.to_string_lossy().into_owned();
+        match gridcraft_engine::io::read_file(&path) {
+            Ok(bytes) => check_bytes(&path, &bytes, &opts),
+            Err(e) => FileReport { path, error: Some(e.to_string()), ..Default::default() },
+        }
+    }));
     if a.has("json") {
         outln!("{}", pretty(&report_json(&reports, &opts)));
     } else {
         print_human(&reports, &opts);
     }
-    if reports.iter().all(FileReport::is_clean) { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+    if !files.is_empty() && reports.iter().all(FileReport::is_clean) { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+#[derive(Default)]
+struct Discovery {
+    files: Vec<PathBuf>,
+    failures: Vec<FileReport>,
+}
+
+impl Discovery {
+    fn fail(&mut self, path: &Path, error: String) {
+        self.failures.push(FileReport { path: path.to_string_lossy().into_owned(), error: Some(error), ..Default::default() });
+    }
+
+    /// False means the file budget is exhausted: the remaining scan is incomplete.
+    fn add_file(&mut self, path: PathBuf) -> bool {
+        if self.files.len() >= MAX_FILES {
+            self.fail(&path, format!("file limit of {MAX_FILES} reached; this and remaining inputs were not checked"));
+            return false;
+        }
+        self.files.push(path);
+        true
+    }
 }
 
 /// Files named on the command line are checked whatever their extension; directories contribute
 /// their `.xlsx`/`.xlsm` files, recursively, in name order. Hidden files and Excel lock files
 /// (`~$…`) are skipped.
-fn collect_inputs(inputs: &[String]) -> Vec<PathBuf> {
-    let mut out = Vec::new();
+fn collect_inputs(inputs: &[String]) -> Discovery {
+    let mut out = Discovery::default();
+    let mut seen = std::collections::HashSet::new();
     for i in inputs {
         let p = PathBuf::from(i);
         if p.is_dir() {
-            walk(&p, 0, &mut out);
-        } else {
-            // A missing path is reported as a file that failed to open.
-            out.push(p);
-        }
-        if out.len() >= MAX_FILES {
-            out.truncate(MAX_FILES);
+            if !walk(&p, 0, &mut out, &mut seen) {
+                break;
+            }
+        } else if !out.add_file(p) {
             break;
         }
+    }
+    if out.files.is_empty()
+        && out.failures.is_empty()
+        && let Some(input) = inputs.first()
+    {
+        out.fail(Path::new(input), "no workbook files were found in the requested inputs".into());
     }
     out
 }
 
-fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > MAX_DEPTH || out.len() >= MAX_FILES {
-        return;
+/// Returns false only when the global file budget stops traversal.
+// `seen` is read in the `cfg(unix)` block below, and only passed down off unix, by design.
+#[cfg_attr(not(unix), allow(clippy::only_used_in_recursion))]
+fn walk(dir: &Path, depth: usize, out: &mut Discovery, seen: &mut std::collections::HashSet<u64>) -> bool {
+    // A directory is visited once by identity (dev+inode on unix): several links to the same
+    // directory are aliases, not exponential branches of the scan. Other platforms keep the
+    // depth cap only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if let Ok(m) = std::fs::metadata(dir)
+            && let Some(id) = m.dev().checked_mul(1 << 60).and_then(|d| d.checked_add(m.ino()))
+            && !seen.insert(id)
+        {
+            return true;
+        }
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    if depth > MAX_DEPTH {
+        out.fail(dir, format!("directory depth limit of {MAX_DEPTH} exceeded; this subtree was not checked"));
+        return true;
+    }
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            out.fail(dir, format!("cannot read directory: {e}"));
+            return true;
+        }
+    };
+    let mut entries = Vec::new();
+    for entry in rd {
+        match entry {
+            Ok(entry) => entries.push(entry.path()),
+            Err(e) => out.fail(dir, format!("cannot read directory entry: {e}")),
+        }
+    }
     entries.sort();
     for p in entries {
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         if name.starts_with('.') || name.starts_with("~$") {
             continue;
         }
-        if p.is_dir() {
-            walk(&p, depth + 1, out);
-        } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("xlsx") || e.eq_ignore_ascii_case("xlsm")) {
-            out.push(p);
-        }
-        if out.len() >= MAX_FILES {
-            return;
+        let metadata = match p.metadata() {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                out.fail(&p, format!("cannot inspect input: {e}"));
+                continue;
+            }
+        };
+        if metadata.is_dir() {
+            if !walk(&p, depth + 1, out, seen) {
+                return false;
+            }
+        } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("xlsx") || e.eq_ignore_ascii_case("xlsm"))
+            && !out.add_file(p)
+        {
+            return false;
         }
     }
+    true
 }
 
 /// Checks one file's bytes. Never fails: problems are recorded in the report. A panic escaping
@@ -287,7 +349,7 @@ fn check_inner(path: &str, bytes: &[u8], opts: &Options) -> FileReport {
             return report;
         }
     };
-    report.warnings = warnings.len();
+    report.warnings = warnings;
     let mut fresh = cached.clone();
     let mut calc = Calc::new();
     calc.recalc_all(&mut fresh);
@@ -935,6 +997,12 @@ fn relationship_kinds(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> 
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not a zip package: {e}"))?;
     let names = zip_names(&mut zip);
     let by_key: HashMap<String, &String> = names.iter().map(|n| (part_key(n), n)).collect();
+    // Several relationships name the same part; each fresh check decompressed it again, so
+    // repeated references to one highly compressible part multiplied the work. The verdict is
+    // remembered per (part, named content) and the decompression the package can cause is
+    // budgeted as a whole (finding: repeated decompression).
+    let mut verdicts: HashMap<(String, &'static str), bool> = HashMap::new();
+    let mut budget: u64 = 512 * 1024 * 1024;
     let mut kinds = BTreeMap::new();
     for n in names.iter().filter(|n| part_key(n).ends_with(".rels")) {
         let Some(src_dir) = rels_source_dir(&part_key(n)) else { continue };
@@ -948,7 +1016,7 @@ fn relationship_kinds(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> 
             let external = attr(attrs, "TargetMode").is_some_and(|m| m.eq_ignore_ascii_case("External"));
             if !external
                 && let Some(part) = by_key.get(&resolve_target(&src_dir, target).to_ascii_lowercase())
-                && !holds_something(&mut zip, part, kind)
+                && !holds_something(&mut zip, part, kind, &mut verdicts, &mut budget)
             {
                 continue;
             }
@@ -967,13 +1035,39 @@ fn rels_source_dir(key: &str) -> Option<String> {
 
 /// Whether a part has content: an element under its root, or for comments (whose authors list
 /// comes first) a comment, for VML a shape. Read only as far as needed; an unreadable part counts.
-fn holds_something(zip: &mut Zip<'_>, name: &str, kind: &str) -> bool {
-    use quick_xml::events::Event;
-    let Ok(f) = zip.by_name(name) else { return true };
-    let mut reader = quick_xml::Reader::from_reader(std::io::BufReader::new(f.take(MAX_XML_PART)));
-    let wanted: Option<&[u8]> = match kind.to_ascii_lowercase().as_str() {
+/// `verdicts` remembers the answer per (part, named content); `budget` is the decompression this
+/// package's remaining checks may cause, and once it is spent the part counts as having content.
+fn holds_something(zip: &mut Zip<'_>, name: &str, kind: &str, verdicts: &mut HashMap<(String, &'static str), bool>, budget: &mut u64) -> bool {
+    let wanted: Option<&'static [u8]> = match kind.to_ascii_lowercase().as_str() {
         "comments" => Some(b"comment"),
         "vmldrawing" => Some(b"shape"),
+        _ => None,
+    };
+    let marker = match wanted {
+        Some(b"comment") => "comment",
+        Some(_) => "shape",
+        None => "any",
+    };
+    if let Some(v) = verdicts.get(&(name.to_ascii_lowercase(), marker)) {
+        return *v;
+    }
+    let v = holds_something_uncached(zip, name, marker, budget);
+    verdicts.insert((name.to_ascii_lowercase(), marker), v);
+    v
+}
+
+fn holds_something_uncached(zip: &mut Zip<'_>, name: &str, marker: &'static str, budget: &mut u64) -> bool {
+    use quick_xml::events::Event;
+    let Ok(f) = zip.by_name(name) else { return true };
+    if *budget == 0 {
+        return true;
+    }
+    let take = f.size().min(MAX_XML_PART).min(*budget);
+    *budget -= take;
+    let mut reader = quick_xml::Reader::from_reader(std::io::BufReader::new(f.take(take)));
+    let wanted: Option<&'static [u8]> = match marker {
+        "comment" => Some(b"comment"),
+        "shape" => Some(b"shape"),
         _ => None,
     };
     let mut buf = Vec::new();
@@ -1269,6 +1363,31 @@ mod tests {
     use gridcraft_engine::model::Formula;
 
     use super::*;
+
+    #[test]
+    fn discovery_reports_a_directory_read_error() {
+        let path = std::env::temp_dir().join(format!("gridcraft-check-not-a-directory-{}", std::process::id()));
+        std::fs::write(&path, "not a directory").unwrap();
+        let mut discovery = Discovery::default();
+        let mut seen = std::collections::HashSet::new();
+        assert!(walk(&path, 0, &mut discovery, &mut seen));
+        assert!(discovery.files.is_empty());
+        assert_eq!(discovery.failures.len(), 1);
+        assert_eq!(discovery.failures[0].path, path.to_string_lossy());
+        assert!(discovery.failures[0].error.as_ref().unwrap().contains("cannot read directory"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn discovery_reports_omissions_only_after_the_file_limit() {
+        let mut discovery = Discovery { files: vec![PathBuf::from("book.xlsx"); MAX_FILES - 1], ..Default::default() };
+        assert!(discovery.add_file(PathBuf::from("last.xlsx")));
+        assert!(discovery.failures.is_empty());
+        assert!(!discovery.add_file(PathBuf::from("omitted.xlsx")));
+        assert_eq!(discovery.files.len(), MAX_FILES);
+        assert_eq!(discovery.failures[0].path, "omitted.xlsx");
+        assert!(discovery.failures[0].error.as_ref().unwrap().contains("file limit"));
+    }
 
     fn at(a1: &str) -> CellRef {
         CellRef::parse(a1).unwrap()
@@ -1598,6 +1717,15 @@ mod tests {
             ],
         );
         assert_eq!(package_of(&source), ["lost relationship madeUp"]);
+    }
+
+    #[test]
+    fn json_lists_warning_messages() {
+        let with = FileReport { path: "a.ods".into(), warnings: vec!["ODS data-only import".into()], ..Default::default() };
+        let without = FileReport { path: "b.xlsx".into(), ..Default::default() };
+        let v = report_json(&[with, without], &Options::default());
+        assert_eq!(v["files"][0]["warnings"], json!(["ODS data-only import"]));
+        assert_eq!(v["files"][1]["warnings"], json!([]));
     }
 
     #[test]
