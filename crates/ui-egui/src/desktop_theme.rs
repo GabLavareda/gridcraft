@@ -39,6 +39,9 @@ impl DesktopTheme {
     pub fn start() -> Self {
         let (tx, rx) = channel();
         let started = std::thread::Builder::new().name("gridcraft-desktop-theme".into()).spawn(move || {
+            // Off Linux `Link` is `()`, so the binding holds a unit value; it is still the link
+            // the loop carries from one read to the next on Linux.
+            #[allow(clippy::let_unit_value)]
             let mut link = Link::default();
             let mut last = read(&mut link);
             if tx.send(last).is_err() {

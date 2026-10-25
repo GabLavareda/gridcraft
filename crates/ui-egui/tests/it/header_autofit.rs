@@ -183,7 +183,15 @@ fn table_filter_autofit_works_through_command_and_header_double_click() {
             let rect = geo.cell_rect(sheet, cell);
             let button = gridcraft_ui_egui::grid::filter_button_rect(&geo, sheet, cell);
             let style = app.session.active().unwrap().wb.styles.get(sheet.style_id(cell));
-            let text_width = gridcraft_engine::cmd::format::approx_text_width("Quarterly Revenue", style.font.size, style.font.bold) * geo.z;
+            // AutoFit measured the heading with the interface's own fonts, so the check measures
+            // it the same way: the approximation is wider than the real text on some systems and
+            // narrower on others, which is not what this test is about.
+            let heading = "Quarterly Revenue";
+            let measured = match &app.session.text_width {
+                Some(measure) => measure(heading, &style.font, true),
+                None => gridcraft_engine::cmd::format::approx_text_width(heading, style.font.size, style.font.bold),
+            };
+            let text_width = measured * geo.z;
             assert!(rect.left() + text_width + 2.5 * geo.z < button.left(), "heading overlaps filter: zoom={zoom}, double_click={double_click}");
             assert_eq!(app.session.active().unwrap().undo.len(), 1);
             h.state_mut().session.execute("edit.undo", json!({})).unwrap();
